@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dining Assistant — System Data Flow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+    background: #f6f7fb; color: #1e2433; line-height: 1.55;
+    padding: 48px 20px;
+  }
+  .page { max-width: 780px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 44px; }
+  header .kicker {
+    display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 2px;
+    text-transform: uppercase; color: #6c5ce7; margin-bottom: 12px;
+  }
+  header h1 { font-size: 34px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 10px; }
+  header p { color: #5b6478; font-size: 16px; max-width: 600px; margin: 0 auto; }
+
+  .flow { position: relative; }
+  .node {
+    background: #fff; border: 1px solid #e6e8f0; border-radius: 16px;
+    padding: 22px 24px; box-shadow: 0 6px 24px rgba(30, 36, 51, 0.06);
+    display: flex; gap: 18px; align-items: flex-start; position: relative; z-index: 1;
+  }
+  .badge {
+    flex: 0 0 40px; width: 40px; height: 40px; border-radius: 12px;
+    background: linear-gradient(135deg, #6c5ce7, #a55eea);
+    color: #fff; font-weight: 800; font-size: 17px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .node h2 { font-size: 18px; font-weight: 750; margin-bottom: 6px; }
+  .node h2 .tag {
+    font-size: 11px; font-weight: 700; background: #eef0ff; color: #6c5ce7;
+    border-radius: 20px; padding: 3px 10px; margin-left: 8px; vertical-align: middle;
+    letter-spacing: 0.4px; text-transform: uppercase;
+  }
+  .node p { font-size: 14.5px; color: #4a5268; }
+  .node p + p { margin-top: 6px; }
+  .mono {
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12.5px; background: #f1f2f7; border: 1px solid #e6e8f0;
+    border-radius: 6px; padding: 1px 7px; color: #3d4460; white-space: nowrap;
+  }
+  .stat { display: inline-block; margin: 8px 14px 0 0; font-size: 13px; color: #5b6478; }
+  .stat b { color: #1e2433; font-size: 15px; }
+
+  .connector { display: flex; flex-direction: column; align-items: center; padding: 6px 0; }
+  .connector .line { width: 2px; height: 26px; background: linear-gradient(#c9cdf5, #a5abf0); }
+  .connector .pill {
+    font-size: 12px; font-weight: 600; color: #4a4391; background: #eef0ff;
+    border: 1px solid #dfe3fb; border-radius: 20px; padding: 4px 14px; margin: 4px 0;
+  }
+  .connector .chev { color: #a5abf0; font-size: 18px; line-height: 1; }
+
+  .loops { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 34px 0 8px; }
+  .loop {
+    background: #fff; border: 1px dashed #c9cdf5; border-radius: 14px; padding: 18px 20px;
+  }
+  .loop h3 { font-size: 14px; font-weight: 750; color: #4a4391; margin-bottom: 8px; }
+  .loop ol { margin-left: 18px; font-size: 13.5px; color: #4a5268; }
+  .loop ol li { margin-bottom: 4px; }
+
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 26px; }
+  .panel { background: #fff; border: 1px solid #e6e8f0; border-radius: 14px; padding: 20px 22px; }
+  .panel h3 { font-size: 14px; font-weight: 750; margin-bottom: 10px; letter-spacing: 0.3px; }
+  .panel.decisions h3 { color: #1d7a4f; }
+  .panel.tradeoffs h3 { color: #b25b09; }
+  .panel ul { list-style: none; }
+  .panel li { font-size: 13.5px; color: #4a5268; margin-bottom: 9px; padding-left: 20px; position: relative; }
+  .panel.decisions li::before { content: "✓"; position: absolute; left: 0; color: #1d7a4f; font-weight: 800; }
+  .panel.tradeoffs li::before { content: "⇄"; position: absolute; left: 0; color: #b25b09; font-weight: 800; }
+  .panel li b { color: #1e2433; }
+
+  footer { text-align: center; margin-top: 36px; color: #8a91a8; font-size: 12.5px; }
+
+  @media (max-width: 640px) {
+    .loops, .panels { grid-template-columns: 1fr; }
+    header h1 { font-size: 26px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <div class="kicker">Hackathon build</div>
+    <h1>Dining Assistant — System Data Flow</h1>
+    <p>From a raw Yelp CSV to a live demo UI: how a dining request travels through ingestion, deterministic retrieval, an LLM agent, and back to the user.</p>
+  </header>
+
+  <div class="flow">
+
+    <div class="node">
+      <div class="badge">0</div>
+      <div>
+        <h2>Raw data <span class="tag">on disk</span></h2>
+        <p><span class="mono">restaurants.csv</span> — the Yelp restaurant dataset. Stringified Python dicts hide inside the <span class="mono">attributes</span> and <span class="mono">hours</span> columns.</p>
+        <div>
+          <span class="stat"><b>64,629</b> venues</span>
+          <span class="stat"><b>15</b> columns</span>
+          <span class="stat"><b>1,000</b> cities</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector">
+      <div class="pill">one-time load · ~1s</div>
+      <div class="line"></div><div class="chev">▾</div>
+    </div>
+
+    <div class="node">
+      <div class="badge">1</div>
+      <div>
+        <h2>Ingestion <span class="tag">data.py · load()</span></h2>
+        <p>Parses the stringified dicts with <span class="mono">ast.literal_eval</span>, casts types, normalizes categories to lowercase sets, converts hours to minutes, and extracts the price band and feature flags. <span class="mono">0:0-0:0</span> means closed; overnight ranges are preserved.</p>
+        <div>
+          <span class="stat"><b>44.6k</b> open venues</span>
+          <span class="stat"><b>100%</b> parse success</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="connector">
+      <div class="pill">clean records[]</div>
+      <div class="line"></div><div class="chev">▾</div>
+    </div>
+
+    <div class="node">
+      <div class="badge">2</div>
+      <div>
+        <h2>Query layer <span class="tag">deterministic</span></h2>
+        <p><span class="mono">search()</span> filters and ranks — score is stars adjusted for review volume, so 4.5★/800 reviews beats 5.0★/3 reviews. <span class="mono">explain()</span> returns structured reasons per pick. <span class="mono">estimate_cost()</span> maps the price band to a labeled per-person range.</p>
+        <p style="margin-top:8px; font-size:13px; color:#5b6478;">Stateless: no session store. Every result is reproducible from the filters alone.</p>
+      </div>
+    </div>
+
+    <div class="connector">
+      <div class="pill">ranked picks + reasons</div>
+      <div class="line"></div><div class="chev">▾</div>
+    </div>
+
+    <div class="node">
+      <div class="badge">3</div>
+      <div>
+        <h2>Agent <span class="tag">LLM</span></h2>
+        <p>Turns <em>"cheap sushi open late"</em> into structured filters — <span class="mono">{cuisines:[sushi], price_max:2, open_late:true, city:"Philadelphia"}</span> — calls the query layer, then renders picks and explanations as prose. Holds conversation state: the current shortlist and applied filters.</p>
+      </div>
+    </div>
+
+    <div class="connector">
+      <div class="pill">rendered answer</div>
+      <div class="line"></div><div class="chev">▾</div>
+    </div>
+
+    <div class="node">
+      <div class="badge">4</div>
+      <div>
+        <h2>Demo UI <span class="tag">chat</span></h2>
+        <p>The conversation <em>is</em> the interface: recommendations with explanations, adapted to new constraints mid-demo, plus the drafted invitation. Zero UI build — the 3-minute demo budget goes to the assistant, not pixels.</p>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="loops">
+    <div class="loop">
+      <h3>↻ The constraint loop</h3>
+      <ol>
+        <li>User adds a constraint <em>("somewhere with outdoor seating")</em></li>
+        <li>Agent appends <span class="mono">flags:[outdoor_seating]</span> and re-queries</li>
+        <li>Agent diffs the shortlist and explains what changed</li>
+      </ol>
+    </div>
+    <div class="loop">
+      <h3>✉ The invitation branch</h3>
+      <ol>
+        <li>User asks for an invitation</li>
+        <li>Agent takes the top pick + <span class="mono">estimate_cost()</span></li>
+        <li>Agent drafts restaurant, time, and estimated cost</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="panels">
+    <div class="panel decisions">
+      <h3>KEY DESIGN DECISIONS</h3>
+      <ul>
+        <li><b>LLM parses, code retrieves.</b> The demo can't hallucinate a restaurant — every pick comes from <span class="mono">search()</span>, never from the model's imagination.</li>
+        <li><b>Explanation is a function.</b> The "why" behind each pick is generated deterministically, so the demo requirement is met every run, not just when the model feels like it.</li>
+        <li><b>Stateless data layer.</b> A new constraint is just a re-query with modified filters — no session store to build or debug.</li>
+        <li><b>Chat is the UI.</b> Shipping pixels would compete with the assistant for the same demo hours.</li>
+      </ul>
+    </div>
+    <div class="panel tradeoffs">
+      <h3>TRADE-OFFS</h3>
+      <ul>
+        <li><b>In-memory module:</b> fastest to build, demo-proof, zero infra. Chosen for the hackathon.</li>
+        <li><b>Docker + FastAPI:</b> a real service, reproducible, no cloud risk. Stretch goal once the core works.</li>
+        <li><b>Supabase:</b> the "real integration" story, but needs network + setup time. Skipped for demo reliability.</li>
+        <li><b>Unknown prices excluded</b> when a budget filter is set — every "cheap" pick is verified cheap, at the cost of ~10k rows.</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>Built for a 3-minute live demo · Dataset: jaimik69/Yelp-Restaurant-Dataset</footer>
+
+</div>
+</body>
+</html>

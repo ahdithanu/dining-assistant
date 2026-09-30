@@ -350,6 +350,52 @@ def social_signals(city=None, limit=6):
     return spots[:limit]
 
 
+def trending(city, limit=6, exclude_ids=()):
+    """Region-aware 'trending' picks for cities without curated social data.
+
+    Honest signal only: the most-loved open venues in the city, ranked by
+    stars x review volume. Returns social-spot-shaped dicts (with a `buzz`
+    line describing the data proof), so the frontend renders them exactly
+    like the Instagram section. Empty list when the city has no coverage.
+    """
+    import math
+    excluded = set(exclude_ids or ())
+    recs = [r for r in load()
+            if r.get("is_open") and (r.get("city") or "").lower() == city.strip().lower()
+            and r["business_id"] not in excluded]
+    recs.sort(key=lambda r: (r.get("stars") or 0) * math.log10((r.get("review_count") or 0) + 10),
+              reverse=True)
+    out = []
+    for r in recs[:limit]:
+        cats = r.get("categories") or []
+        out.append({
+            "business_id": r["business_id"],
+            "name": r["name"],
+            "address": r.get("address"),
+            "city": r.get("city"),
+            "state": r.get("state"),
+            "lat": r.get("lat"),
+            "lng": r.get("lng"),
+            "stars": r.get("stars") or 0,
+            "review_count": r.get("review_count") or 0,
+            "price_band": r.get("price_band"),
+            "cuisine": (cats[0] if cats else None),
+            "buzz": (f"{r.get('stars')} stars across "
+                     f"{(r.get('review_count') or 0):,} reviews -- "
+                     f"one of {r.get('city')}'s most-loved spots"),
+        })
+    return out
+
+
+def top_cities(n=5):
+    """Most-covered cities by open-venue count, for coverage messaging."""
+    counts = {}
+    for r in load():
+        if r.get("is_open") and r.get("city"):
+            counts[r["city"]] = counts.get(r["city"], 0) + 1
+    return [name for name, _ in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:n]]
+
+
 # ------------------------------------------------------------------ self-test
 
 if __name__ == "__main__":

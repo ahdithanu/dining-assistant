@@ -29,10 +29,14 @@ _clients: dict[str, QdrantClient] = {}
 
 def get_client() -> QdrantClient:
     url = os.environ.get("QDRANT_URL")
+    api_key = os.environ.get("QDRANT_API_KEY")  # Qdrant Cloud
     path = os.environ.get("QDRANT_PATH", "vector/qdrant_data")
     key = url or f"path:{path}"
     if key not in _clients:
-        _clients[key] = QdrantClient(url=url) if url else QdrantClient(path=path)
+        if url:
+            _clients[key] = QdrantClient(url=url, api_key=api_key)
+        else:
+            _clients[key] = QdrantClient(path=path)
     return _clients[key]
 
 

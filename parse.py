@@ -29,6 +29,54 @@ from data import _CUISINE_ALIASES, correct_cuisine, load  # noqa: E402
 _cities_by_len = None
 
 
+# Major US cities with zero venues in the dataset (verified 2026-09-29 against
+# all 984 dataset cities). When the user names one of these, /ask says so
+# explicitly instead of silently searching nationally. (alias, canonical),
+# longest first so "salt lake city" beats "lake"-style collisions; matched
+# with word boundaries.
+_UNCOVERED_CITIES = [
+    ("salt lake city", "Salt Lake City"),
+    ("san francisco", "San Francisco"),
+    ("oklahoma city", "Oklahoma City"),
+    ("washington dc", "Washington DC"),
+    ("kansas city", "Kansas City"),
+    ("los angeles", "Los Angeles"),
+    ("fort worth", "Fort Worth"),
+    ("las vegas", "Las Vegas"),
+    ("san diego", "San Diego"),
+    ("new york", "New York"),
+    ("albuquerque", "Albuquerque"),
+    ("sacramento", "Sacramento"),
+    ("minneapolis", "Minneapolis"),
+    ("pittsburgh", "Pittsburgh"),
+    ("cleveland", "Cleveland"),
+    ("baltimore", "Baltimore"),
+    ("louisville", "Louisville"),
+    ("milwaukee", "Milwaukee"),
+    ("raleigh", "Raleigh"),
+    ("memphis", "Memphis"),
+    ("detroit", "Detroit"),
+    ("orlando", "Orlando"),
+    ("denver", "Denver"),
+    ("austin", "Austin"),
+    ("boston", "Boston"),
+    ("dallas", "Dallas"),
+    ("miami", "Miami"),
+    ("tulsa", "Tulsa"),
+    ("fresno", "Fresno"),
+    ("el paso", "El Paso"),
+    ("mesa", "Mesa"),
+    ("seattle", "Seattle"),
+    ("atlanta", "Atlanta"),
+    ("houston", "Houston"),
+    ("chicago", "Chicago"),
+    ("phoenix", "Phoenix"),
+    ("portland", "Portland"),
+    ("nyc", "New York"),
+    ("sf", "San Francisco"),
+]
+
+
 def _cities():
     """All distinct cities from the dataset, longest name first."""
     global _cities_by_len
@@ -119,7 +167,7 @@ _SEARCH_KEYS = ["city", "cuisines", "price_max", "min_stars", "min_reviews",
 
 
 def _blank():
-    return {"city": None, "cuisines": [], "price_max": None,
+    return {"city": None, "uncovered_city": None, "cuisines": [], "price_max": None,
             "min_stars": 0.0, "min_reviews": 10, "open_late": False,
             "day": None, "flags": [], "party_size": None, "notes": []}
 
@@ -145,6 +193,16 @@ def _parse(text):
             result["city"] = city
             consumed.update(city.lower().split())
             break
+
+    # Uncovered city: the user named a real city we have no venues for.
+    # Flag it (and consume the tokens) so /ask can say so explicitly
+    # instead of silently falling back to a national search.
+    if not result["city"]:
+        for alias, canon in _UNCOVERED_CITIES:
+            if re.search(r"\b" + re.escape(alias) + r"\b", q):
+                result["uncovered_city"] = canon
+                consumed.update(alias.split())
+                break
 
     # Party size: "party of 6", "table for 4", "for 4", "2 people".
     for rx in _PARTY_RES:
@@ -232,6 +290,9 @@ def parse_request(text, defaults=None):
     merged = merge_filters(result, _parse(text))
     if merged["open_late"] is None:  # normalize the internal unset marker
         merged["open_late"] = False
+    if merged["city"]:
+        # A real covered city clears any earlier uncovered-city flag.
+        merged["uncovered_city"] = None
     return merged
 
 

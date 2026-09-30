@@ -184,7 +184,8 @@ def main() -> None:
         print(f"done -> {args.out}")
         return
 
-    client = (QdrantClient(url=args.qdrant_url)
+    import os
+    client = (QdrantClient(url=args.qdrant_url, api_key=os.environ.get("QDRANT_API_KEY"))
               if args.qdrant_url else QdrantClient(path=args.local_path))
     if not client.collection_exists(args.collection):
         client.create_collection(args.collection,

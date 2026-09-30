@@ -30,25 +30,27 @@ CANDIDATE_LIMIT = 50
 
 
 def rerank_by_vibe(text: str, filters: dict, limit: int = 3):
-    """Return (picks, vibe_applied).
+    """Return (picks, vibe_applied, error).
 
     picks: top-`limit` picks in data.search()'s shape, reordered by the
     blended deterministic+vector score. Each pick keeps its fields and
     gains vibe_score (raw cosine similarity).
+    error: None on success; the skip reason when the vector backend was
+    unavailable (surfaced by /ask as vibe_error for diagnosability).
     """
     kw = {k: filters[k] for k in parse._SEARCH_KEYS}
     kw["open_only"] = True
     candidates = data.search(limit=CANDIDATE_LIMIT, **kw)
     if not candidates:
-        return [], False
+        return [], False, "no candidates from deterministic search"
     try:
         vec_scores = _vector_scores(
             text, [p["record"]["business_id"] for p in candidates])
     except Exception as e:  # vector backend unavailable -> deterministic
         log.warning("vibe rerank skipped: %s", e)
-        return candidates[:limit], False
+        return candidates[:limit], False, str(e)
     if not vec_scores:
-        return candidates[:limit], False
+        return candidates[:limit], False, "vector backend returned no scores"
 
     max_det = max(p["score"] for p in candidates) or 1.0
     ranked = []
@@ -67,7 +69,7 @@ def rerank_by_vibe(text: str, filters: dict, limit: int = 3):
         p["score"] = blended
         p["vibe_score"] = round(vec, 4)
         out.append(p)
-    return out, True
+    return out, True, None
 
 
 def _vector_scores(text: str, business_ids: list[str]) -> dict[str, float]:

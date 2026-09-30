@@ -12,7 +12,9 @@
      ============================================================ -->
 <script>
   window.FORKCAST_CONFIG = {
-    API_BASE: "http://localhost:8000",
+    // Same-origin when served by the API (single-URL deploy); localhost
+    // fallback when opened as a local file. ?api= still overrides.
+    API_BASE: (location.protocol.indexOf("http") === 0 ? location.origin : "http://localhost:8000"),
     REQUEST_TIMEOUT_MS: 12000,
     DEFAULT_LIMIT: 5,
     MAX_PINS: 50            // hard cap: never plot more than this, whatever comes back
@@ -604,6 +606,7 @@ function finishTurn(turn, r, before, my, label) {
   turn.summary = r.summary || label || "";
   turn.notes = r.notes || [];
   turn.social = r.social || [];
+  turn.trends = r.trends || null;
   turn.picks = picks; turn.prevIds = before;
   S.prevIds = before; S.picks = picks;
   S.status = "ready"; S.hasSearched = true;
@@ -648,7 +651,7 @@ async function search() {
   try {
     const data = await api("/search", body());
     if (my !== S.req) return;                          // stale response, a newer search is in flight
-    finishTurn(turn, { picks: data.picks, summary: summaryText(), notes: data.notes || [], social: data.social || [] }, before, my);
+    finishTurn(turn, { picks: data.picks, summary: summaryText(), notes: data.notes || [], social: data.social || [], trends: data.trends || null }, before, my);
   } catch (e) {
     if (my !== S.req) return;
     failTurn(turn, e);
@@ -801,23 +804,38 @@ function turnHTML(t) {
   return `<div class="turn">${u}<div class="abubble">${inner}</div></div>`;
 }
 function peepHTML(t) {
-  // "Peep these too" — Instagram-buzzing spots not already in the picks.
-  const spots = (t.social || []).filter(s => !t.picks.some(p => p.business_id === s.business_id)).slice(0, 4);
+  // Region-aware trends: curated Instagram buzz where we have it,
+  // otherwise the query city's most-loved spots from review data.
+  // Spots already in the picks are filtered out; + Add is always explicit.
+  let label, source, icon, spots;
+  if (t.trends && t.trends.spots && t.trends.spots.length) {
+    label = t.trends.label; source = t.trends.source; icon = t.trends.icon || "⭐";
+    spots = t.trends.spots;
+  } else {
+    // legacy fallback: plain social list (pre-trends responses)
+    spots = (t.social || []);
+    if (!spots.length) return "";
+    label = "👀 Peep these too";
+    source = `Buzzing on Instagram${S.filters.city ? ` in ${esc(S.filters.city)}` : ""} — tap + to add one to your list`;
+    icon = "📸";
+  }
+  spots = spots.filter(s => !t.picks.some(p => p.business_id === s.business_id)).slice(0, 4);
   if (!spots.length) return "";
   const rows = spots.map(s => `
     <div class="peep-row">
       <div class="info">
         <div class="nm">${esc(s.name)}</div>
         <div class="meta">★ <b>${s.stars}</b> × ${fmtN(s.review_count)} reviews · ${priceText(s.price_band)}${s.cuisine ? ` · ${esc(s.cuisine)}` : ""}</div>
-        <p class="buzz"><b>📸</b> ${esc(s.buzz)}</p>
+        <p class="buzz"><b>${esc(icon)}</b> ${esc(s.buzz)}</p>
       </div>
       <button type="button" class="peep-add" data-act="peep-add" data-id="${esc(s.business_id)}" data-turn="${t.id}">+ Add</button>
     </div>`).join("");
-  return `<div class="peep"><h3>👀 Peep these too</h3><p class="peep-sub">Buzzing on Instagram${S.filters.city ? ` in ${esc(S.filters.city)}` : ""} — tap + to add one to your list</p>${rows}</div>`;
+  return `<div class="peep"><h3>${esc(label)}</h3><p class="peep-sub">${esc(source)}</p>${rows}</div>`;
 }
 function peepAdd(turnId, businessId) {
   const turn = S.turns.find(x => x.id === turnId);
-  const spot = turn?.social?.find(s => s.business_id === businessId);
+  const pool = [...(turn?.trends?.spots || []), ...(turn?.social || [])];
+  const spot = pool.find(s => s.business_id === businessId);
   if (!turn || !spot || turn.picks.some(p => p.business_id === businessId)) return;
   const pick = {
     business_id: spot.business_id, name: spot.name, address: spot.address,

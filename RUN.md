@@ -110,3 +110,18 @@ Run the API with the vector stack:
 export HF_TOKEN=<real token> QDRANT_URL=http://localhost:6333
 DINING_DATA_PATH=dataset/restaurants.csv uvicorn api:app --port 8000
 ```
+
+## Phase 3 (2026-09-29): coverage guard + region-aware trends + vibe visibility
+
+- Uncovered cities: 40 major US cities with zero dataset venues (Miami, NYC,
+  LA, Chicago, ...) are detected by the parser (`uncovered_city`). `/ask`
+  answers explicitly ("We don't have Miami in our data yet -- try
+  Philadelphia, Tampa, ...") instead of silently searching nationally.
+- Trends are region-aware: curated Instagram buzz where it exists
+  (Philadelphia), otherwise "Trending in {city}" from review data
+  (stars x review volume, honest "most-loved" labeling). `trends` object in
+  `/ask` and `/search` responses carries label/source/icon/spots; + Add stays
+  explicit. Never silently tied to one city.
+- Vibe visibility: `/health` reports qdrant status, collection vector count,
+  and hf_token presence -- one curl shows whether the vibe is on. `/ask`
+  returns `vibe_error` with the skip reason when the vector backend is down.

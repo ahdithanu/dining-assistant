@@ -19,7 +19,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+
+import os
 
 import data
 from invite import draft_invitation
@@ -94,10 +97,18 @@ class SocialSpotOut(BaseModel):
     buzz: str
 
 
+class TrendsOut(BaseModel):
+    label: str  # section header, e.g. "Peep these too" / "Trending in Boise"
+    source: str  # one-line provenance, e.g. Instagram buzz vs review data
+    icon: str = "⭐"  # emoji prefix for the buzz lines
+    spots: list["SocialSpotOut"]
+
+
 class SearchResponse(BaseModel):
     picks: list[PickOut]
     notes: list[str] = []
     social: list[SocialSpotOut] = []
+    trends: TrendsOut | None = None
 
 
 class ExplainRequest(BaseModel):
@@ -137,6 +148,13 @@ class CitiesResponse(BaseModel):
     cities: list[CityOut]
 
 
+class TrendsOut(BaseModel):
+    label: str  # section header, e.g. "Peep these too" / "Trending in Boise"
+    source: str  # one-line provenance, e.g. Instagram buzz vs review data
+    icon: str = "⭐"  # emoji prefix for the buzz lines
+    spots: list[SocialSpotOut]
+
+
 class AskRequest(BaseModel):
     text: str
     filters: dict | None = None  # previous turn's filters; omitted = fresh
@@ -149,7 +167,9 @@ class AskResponse(BaseModel):
     summary: str
     notes: list[str]
     social: list[SocialSpotOut] = []
+    trends: TrendsOut | None = None  # region-aware trends section
     vibe_applied: bool = False  # True when the vector reranked the picks
+    vibe_error: str | None = None  # why the vibe was skipped, when it was
 
 
 # ------------------------------------------------------------------ helpers
@@ -185,7 +205,67 @@ def _record_or_404(business_id: str) -> dict:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "venues": len(app.state.records)}
+    info = {"ok": True, "venues": len(app.state.records)}
+    # Vector backend status -- one curl tells you whether "the vibe is on".
+    qurl = os.environ.get("QDRANT_URL")
+    if not qurl:
+        info["qdrant"] = "QDRANT_URL not set"
+    else:
+        try:
+            client = vibe.get_client()
+            coll = vibe.collection_name()
+            if client.collection_exists(coll):
+                info["qdrant"] = "ok"
+                info["collection"] = coll
+                try:
+                    info["vectors"] = client.count(coll, exact=False).count
+                except Exception:
+                    pass
+            else:
+                info["qdrant"] = (f"connected but collection '{coll}' missing "
+                                  "-- run vector/embed_load.py against it")
+        except Exception as e:
+            info["qdrant"] = f"unreachable: {type(e).__name__}: {e}"
+    info["hf_token"] = "set" if os.environ.get("HF_TOKEN") else "missing"
+    return info
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    """Serve the frontend from the API itself -- one URL for the demo."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    page = os.path.join(here, "frontend.html")
+    if os.path.exists(page):
+        return FileResponse(page, media_type="text/html")
+    return {"ok": True, "docs": "/docs"}
+
+
+def _trends_for(city: str | None, exclude_ids) -> TrendsOut | None:
+    """Region-aware trends section for a city.
+
+    Curated Instagram buzz where we have it (Philadelphia today);
+    otherwise the city's most-loved spots from review data. Returns None
+    when there's no city or no coverage -- never silently tied to one city.
+    """
+    if not city:
+        return None
+    ig = data.social_signals(city)
+    if ig:
+        return TrendsOut(
+            label="👀 Peep these too",
+            source="Buzzing on Instagram -- tap + to add one to your list",
+            icon="📸",
+            spots=[SocialSpotOut(**x) for x in ig],
+        )
+    tspots = data.trending(city, limit=6, exclude_ids=exclude_ids)
+    if not tspots:
+        return None
+    return TrendsOut(
+        label=f"🔥 Trending in {city}",
+        source="Local favorites from review data -- tap + to add one to your list",
+        icon="⭐",
+        spots=[SocialSpotOut(**x) for x in tspots],
+    )
 
 
 @app.post("/search", response_model=SearchResponse)
@@ -208,8 +288,10 @@ def search(req: SearchRequest):
         flags=req.flags,
         limit=req.limit,
     )
-    return {"picks": [_pick_out(p) for p in picks], "notes": notes,
-            "social": [SocialSpotOut(**s) for s in data.social_signals(req.city)]}
+    pick_outs = [_pick_out(p) for p in picks]
+    return {"picks": pick_outs, "notes": notes,
+            "social": [SocialSpotOut(**s) for s in data.social_signals(req.city)],
+            "trends": _trends_for(req.city, {p["business_id"] for p in pick_outs})}
 
 
 class SocialResponse(BaseModel):
@@ -265,15 +347,35 @@ def ask(req: AskRequest):
         # sanitize/complete the client-supplied filters through the parser
         s.filters = parse.parse_request("", defaults=req.filters)
     msg = s.ask(req.text)
+
+    # Uncovered city: the user named a real city with zero venues in our
+    # data. Say so explicitly instead of silently searching nationally.
+    uncovered = s.filters.get("uncovered_city")
+    if uncovered:
+        covered = data.top_cities(5)
+        return {
+            "filters": s.filters,
+            "picks": [],
+            "summary": (f"We don't have {uncovered} in our data yet -- "
+                        f"our coverage is strongest in {', '.join(covered[:-1])} "
+                        f"and {covered[-1]}. Try one of those?"),
+            "notes": [],
+            "social": [],
+            "trends": None,
+            "vibe_applied": False,
+            "vibe_error": None,
+        }
+
     picks = s.picks
     vibe_applied = False
+    vibe_error = None
     if req.vibe and picks:
         try:
-            picks, vibe_applied = blend.rerank_by_vibe(
+            picks, vibe_applied, vibe_error = blend.rerank_by_vibe(
                 req.text, s.filters, limit=3)
             s.picks = picks
-        except Exception:
-            picks, vibe_applied = s.picks, False  # never break the chat
+        except Exception as e:
+            picks, vibe_applied, vibe_error = s.picks, False, str(e)  # never break the chat
     # summary = the head line of the assistant message (before the pick list),
     # or the whole message when nothing matched.
     summary = msg.split("\n\n")[0] if picks else msg
@@ -283,6 +385,12 @@ def ask(req: AskRequest):
         # notes are noise now -- keep only the informative corrections.
         notes = [n for n in notes if "corrected from" in n]
         notes = notes + ["Ranked by vibe: semantic match on your phrase."]
+
+    # Region-aware trends: curated Instagram buzz where we have it
+    # (Philadelphia today), otherwise most-loved spots from review data
+    # for the query's city. Never silently tied to one city.
+    city = s.filters.get("city")
+    trends = _trends_for(city, {p["record"]["business_id"] for p in picks})
     return {
         "filters": s.filters,
         "picks": [_pick_out(p) for p in picks],
@@ -290,7 +398,9 @@ def ask(req: AskRequest):
         "notes": notes,
         "social": [SocialSpotOut(**x)
                    for x in data.social_signals(s.filters.get("city"))],
+        "trends": trends,
         "vibe_applied": vibe_applied,
+        "vibe_error": vibe_error,
     }
 
 
