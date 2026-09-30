@@ -1,0 +1,1192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forkcast · dining picks</title>
+
+<!-- ============================================================
+     CONFIG. Change API_BASE here, or override per-run with
+       ?api=https://your-host:8000      (points at a backend)
+       ?demo=1                          (built-in mock backend, no server)
+     ============================================================ -->
+<script>
+  window.FORKCAST_CONFIG = {
+    API_BASE: "http://localhost:8000",
+    REQUEST_TIMEOUT_MS: 12000,
+    DEFAULT_LIMIT: 5,
+    MAX_PINS: 50            // hard cap: never plot more than this, whatever comes back
+  };
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+
+<style>
+:root{
+  --ground:#F5F1E8; --panel:#FFFDF8; --ink:#1D1B16; --ink-2:#4A463C; --ink-3:#6B665A;
+  --line:#E3DCCB; --line-2:#D2C8B2;
+  --accent:#B93A0F;      /* top pick, primary action */
+  --accent-soft:#FBE7DC;
+  --sel:#0E4F66;         /* selection */
+  --sel-soft:#DDEEF3;
+  --new:#C2610C;         /* added picks */
+  --new-soft:#FDEBD3;
+  --ok:#2F6B3A;
+  --err:#9E2A1B; --err-soft:#FBE3DE;
+  --r:14px;
+  --display:"Fraunces", Georgia, serif;
+  --body:"Instrument Sans", system-ui, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.45;-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid var(--sel);outline-offset:2px;border-radius:8px}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* ---------- app shell ---------- */
+.app{display:grid;grid-template-rows:auto auto 1fr;height:100vh;height:100dvh}
+.topbar{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font-family:var(--display);font-weight:700;font-size:24px;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
+.brand-mark{width:28px;height:28px;border-radius:50%;background:var(--accent);display:grid;place-items:center;color:#fff}
+.city{display:flex;align-items:center;gap:8px;margin-left:8px}
+.city select,.city input{border:1px solid var(--line-2);background:#fff;border-radius:10px;padding:8px 10px;min-height:40px;font-weight:600}
+.city .count{color:var(--ink-3);font-size:13px}
+.status{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-3)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--line-2)}
+.dot.ok{background:var(--ok)} .dot.bad{background:var(--err)} .dot.wait{background:var(--new)}
+.demo-tag{font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:99px;background:var(--new-soft);color:#7A3A05}
+
+/* ---------- filters ---------- */
+.filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--ground)}
+.field{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid var(--line-2);border-radius:999px;padding:4px 6px 4px 12px;min-height:40px}
+.field label{font-size:12px;color:var(--ink-3);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.field select,.field input{border:0;background:transparent;min-height:32px;font-weight:600;padding:0 4px}
+.field input[type=text]{width:130px}
+.seg{display:inline-flex;border-radius:999px;overflow:hidden}
+.seg button{border:0;background:transparent;padding:4px 10px;min-height:32px;min-width:36px;font-weight:600;color:var(--ink-3);border-radius:999px}
+.seg button[aria-pressed=true]{background:var(--ink);color:#fff}
+.toggle{border:1px solid var(--line-2);background:#fff;border-radius:999px;padding:6px 14px;min-height:40px;font-weight:600}
+.toggle[aria-pressed=true]{background:var(--ink);color:#fff;border-color:var(--ink)}
+.chip{display:inline-flex;align-items:center;gap:4px;background:var(--sel-soft);color:var(--sel);border-radius:999px;padding:2px 4px 2px 10px;font-weight:600;font-size:13px}
+.chip button{border:0;background:transparent;width:24px;height:24px;border-radius:50%;color:inherit}
+.chip button:hover{background:#c7e1ea}
+.go{margin-left:auto;background:var(--accent);color:#fff;border:0;border-radius:999px;padding:0 20px;min-height:44px;font-weight:700;font-size:15px}
+.go:hover{filter:brightness(.93)}
+.go:disabled{opacity:.6;cursor:progress}
+
+/* ---------- refine (filters live behind a disclosure now; chat is the hero) ---------- */
+.refine{background:var(--panel);border-bottom:1px solid var(--line)}
+.refine summary{cursor:pointer;padding:10px 20px;font-size:13px;font-weight:700;color:var(--ink-2);list-style:none}
+.refine summary::-webkit-details-marker{display:none}
+.refine summary::before{content:"▸ ";color:var(--ink-3)}
+.refine[open] summary::before{content:"▾ "}
+.refine .filters{border-top:1px solid var(--line)}
+
+/* ---------- chat ---------- */
+.listpane{display:flex;flex-direction:column;min-height:0}
+.chatlog{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;min-height:0}
+.turn{display:flex;flex-direction:column;gap:8px;max-width:100%}
+.ububble{align-self:flex-end;background:var(--accent);color:#fff;border-radius:18px 18px 4px 18px;padding:10px 16px;font-size:15px;max-width:85%;line-height:1.45}
+.abubble{align-self:stretch;background:var(--panel);border:1px solid var(--line);border-radius:4px 18px 18px 18px;padding:14px 16px;line-height:1.5}
+.abubble .asummary{margin:0 0 4px;font-size:15px}
+.abubble .anote{margin:0 0 8px;font-size:13px;color:var(--ink-3)}
+.abubble .cards{margin:8px 0 0}
+.abubble .turnfoot{margin:10px 0 0;font-size:13px;color:var(--ink-2)}
+.abubble.err{background:#fff5f5;border-color:#f5c2c2}
+.abubble.err h2{font-size:16px;margin:0 0 6px}
+.typing{display:inline-flex;gap:5px;padding:6px 2px}
+.typing i{width:8px;height:8px;border-radius:50%;background:var(--ink-3);animation:tp 1s infinite}
+.typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}
+@keyframes tp{0%,100%{opacity:.3;transform:none}50%{opacity:1;transform:translateY(-3px)}}
+.greet{font-size:15px}
+.greet .ex{margin:10px 0 0;display:flex;flex-wrap:wrap;gap:8px}
+.greet .ex button{border:1px solid var(--line-2);background:#fff;border-radius:999px;padding:8px 14px;font-size:14px;cursor:pointer}
+.greet .ex button:hover{border-color:var(--sel)}
+.composer{display:flex;gap:8px;padding:12px 16px;background:var(--panel);border-top:1px solid var(--line)}
+.composer input{flex:1;border:1px solid var(--line-2);border-radius:999px;padding:0 18px;min-height:48px;font-size:16px;background:#fff;min-width:0}
+.composer input:focus{outline:none;border-color:var(--sel);box-shadow:0 0 0 3px var(--sel-soft)}
+.composer .go{margin-left:0;flex:none}
+.muted{color:var(--ink-3)}
+
+/* ---------- main split ---------- */
+.split{display:grid;grid-template-columns:minmax(380px,520px) 1fr;min-height:0}
+.listpane{overflow:hidden;border-right:1px solid var(--line);background:var(--ground)}
+.mappane{position:relative;min-height:0}
+#map{position:absolute;inset:0;background:#E8E2D3}
+.viewtoggle{display:none}
+
+.summary{padding:18px 20px 6px}
+.summary h1{font-family:var(--display);font-weight:500;font-size:26px;line-height:1.15;margin:0 0 4px;letter-spacing:-.01em}
+.summary p{margin:0;color:var(--ink-3);font-size:14px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;padding:6px 20px 10px;font-size:12px;color:var(--ink-3)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.lg{width:14px;height:14px;border-radius:50%;display:inline-block}
+.lg.top{background:var(--accent)} .lg.reg{background:var(--ink)} .lg.new{background:#fff;border:2px solid var(--new)}
+
+ol.cards{list-style:none;margin:0;padding:4px 16px 24px;display:flex;flex-direction:column;gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);position:relative;transition:border-color .15s, box-shadow .15s, transform .25s}
+.card.top{border-color:#E6B59E}
+.card.selected{border-color:var(--sel);box-shadow:0 0 0 2px var(--sel)}
+.card.enter{animation:cardIn .45s ease both}
+@keyframes cardIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.card-main{display:grid;grid-template-columns:40px 1fr;gap:12px;width:100%;text-align:left;background:transparent;border:0;padding:16px 16px 8px;border-radius:var(--r)}
+.rank{width:36px;height:36px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;font-family:var(--mono);font-weight:500;font-size:15px}
+.card.top .rank{background:var(--accent);width:40px;height:40px;font-size:17px}
+.card.nomap .rank{background:#fff;color:var(--ink);border:2px dashed var(--line-2)}
+.name-row{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.name{font-family:var(--display);font-weight:700;font-size:20px;line-height:1.2;letter-spacing:-.005em}
+.badge{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:2px 8px;border-radius:99px}
+.badge.top{background:var(--accent-soft);color:#8A2A08}
+.badge.new{background:var(--new-soft);color:#7A3A05}
+.badge.kept{background:#EDE8DC;color:var(--ink-3)}
+.badge.nomap{background:#EDE8DC;color:var(--ink-2)}
+.meta{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:4px;font-size:14px;color:var(--ink-2)}
+.stars{font-weight:700;color:var(--ink)}
+.price b{color:var(--ink)} .price i{font-style:normal;color:#C9C0AC}
+.addr{font-size:13px;color:var(--ink-3);margin-top:2px}
+.cuis{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.cuis span{font-size:12px;padding:2px 8px;border-radius:99px;background:#F0EBDF;color:var(--ink-2)}
+.cuis span.m{background:var(--sel-soft);color:var(--sel);font-weight:700}
+.why{margin:0 16px 0 68px;padding:10px 0 4px;border-top:1px dashed var(--line)}
+.why h3{margin:0 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3)}
+.why ul{margin:0;padding-left:18px;font-size:14px;color:var(--ink-2)}
+.why li{margin:2px 0}
+.why .muted{font-size:13px;color:var(--ink-3)}
+.actions{display:flex;gap:8px;padding:8px 16px 14px 68px;flex-wrap:wrap}
+.btn{border:1px solid var(--line-2);background:#fff;border-radius:999px;padding:0 14px;min-height:40px;font-weight:600;font-size:14px}
+.btn:hover{border-color:var(--ink-3)}
+.btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+.score{margin-left:auto;align-self:center;font-family:var(--mono);font-size:12px;color:var(--ink-3)}
+
+/* skeleton */
+.sk{background:linear-gradient(90deg,#ECE6D8 0%,#F6F2E8 50%,#ECE6D8 100%);background-size:200% 100%;animation:sh 1.2s linear infinite;border-radius:8px}
+@keyframes sh{to{background-position:-200% 0}}
+.skcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;display:grid;grid-template-columns:40px 1fr;gap:12px}
+
+/* states */
+.state{margin:24px 20px;padding:28px 24px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);text-align:left}
+.state h2{font-family:var(--display);font-weight:500;font-size:22px;margin:0 0 6px}
+.state p{margin:0 0 14px;color:var(--ink-2)}
+.state.err{border-color:#E8B9AF;background:#FFF8F6}
+.state .row{display:flex;gap:8px;flex-wrap:wrap}
+.toast{position:sticky;top:0;z-index:5;margin:8px 16px 0;padding:10px 14px;background:var(--ink);color:#fff;border-radius:12px;font-size:14px;display:flex;gap:10px;align-items:center}
+.toast button{margin-left:auto;background:transparent;border:1px solid #fff5;color:#fff;border-radius:99px;min-height:32px;padding:0 10px}
+
+/* map overlays */
+.overlay{position:absolute;inset:0;z-index:500;display:grid;place-items:center;pointer-events:none}
+.overlay .box{pointer-events:auto;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px 24px;max-width:340px;box-shadow:0 10px 30px #1d1b1622;text-align:center}
+.overlay .box h2{font-family:var(--display);font-weight:500;font-size:20px;margin:0 0 6px}
+.overlay .box p{margin:0 0 12px;color:var(--ink-2);font-size:14px}
+.overlay.dim{background:#F5F1E8B3}
+.spinner{width:34px;height:34px;border-radius:50%;border:3px solid var(--line);border-top-color:var(--accent);animation:spin .8s linear infinite;margin:0 auto 10px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.map-note{position:absolute;left:12px;top:12px;z-index:450;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:13px;color:var(--ink-2)}
+
+/* pins: 44px hit area, visible disc inside */
+.pin-wrap{background:transparent;border:0}
+.pin{width:44px;height:44px;display:grid;place-items:center;position:relative}
+.pin b{width:32px;height:32px;border-radius:50% 50% 50% 4px;transform:rotate(-45deg);background:var(--ink);display:grid;place-items:center;box-shadow:0 3px 8px #0004;border:2px solid #fff;transition:transform .15s, background .15s}
+.pin b span{transform:rotate(45deg);color:#fff;font-family:var(--mono);font-weight:500;font-size:14px}
+.pin.top b{width:40px;height:40px;background:var(--accent)}
+.pin.top b span{font-size:17px}
+.pin.top::after{content:"★";position:absolute;top:-8px;right:-4px;font-size:13px;color:var(--accent);background:#fff;border-radius:50%;width:18px;height:18px;display:grid;place-items:center;box-shadow:0 1px 3px #0003}
+.pin.new b{background:#fff;border-color:var(--new)} .pin.new b span{color:#7A3A05}
+.pin.top.new b{background:var(--accent);border-color:#fff} .pin.top.new b span{color:#fff}
+.pin.sel b{transform:rotate(-45deg) scale(1.22);box-shadow:0 0 0 4px var(--sel),0 6px 14px #0005}
+.pin.dim{opacity:.35}
+.pin.enter b{animation:pinIn .5s cubic-bezier(.2,1.4,.4,1) both}
+@keyframes pinIn{from{transform:rotate(-45deg) translate(-6px,-24px) scale(.3);opacity:0}}
+.pin.leave{animation:pinOut .22s ease forwards}
+@keyframes pinOut{to{opacity:0;transform:scale(.4)}}
+.pin.invite::before{content:"";position:absolute;inset:-10px;border-radius:50%;border:3px solid var(--accent);animation:pulse 1.6s ease-out infinite}
+@keyframes pulse{from{transform:scale(.6);opacity:1}to{transform:scale(1.5);opacity:0}}
+.leaflet-popup-content-wrapper{border-radius:14px}
+.leaflet-popup-content{margin:12px 14px;font-family:var(--body);font-size:14px;min-width:200px}
+.pop h4{margin:0 0 4px;font-family:var(--display);font-size:17px}
+.pop .m{color:var(--sel);font-weight:700}
+.pop .row{display:flex;gap:6px;margin-top:10px}
+.pop button{border:1px solid var(--line-2);background:#fff;border-radius:99px;min-height:36px;padding:0 12px;font-weight:600;font-size:13px}
+.pop button.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+
+/* invite panel */
+.invite{padding:18px 20px 28px}
+.invite .back{border:0;background:transparent;font-weight:600;color:var(--ink-2);padding:8px 0;min-height:40px}
+.invite h1{font-family:var(--display);font-weight:500;font-size:26px;margin:4px 0 2px}
+.invite .sub{color:var(--ink-3);margin:0 0 16px}
+.form{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:14px}
+.form label{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em}
+.form input,.form select{border:1px solid var(--line-2);border-radius:10px;min-height:44px;padding:0 10px;background:#fff;font-weight:600;text-transform:none;letter-spacing:0;font-size:15px;color:var(--ink)}
+.ticket{background:var(--panel);border:1px solid var(--line);border-radius:18px;overflow:hidden}
+.ticket .hd{background:var(--ink);color:#fff;padding:16px 18px}
+.ticket .hd .n{font-family:var(--display);font-size:22px;font-weight:700}
+.ticket .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-bottom:1px dashed var(--line-2)}
+.ticket .grid div{padding:12px 18px;border-right:1px solid var(--line)}
+.ticket .grid div:last-child{border-right:0}
+.ticket .k{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);font-weight:700}
+.ticket .v{font-weight:700;font-size:16px}
+.ticket .msg{padding:14px 18px;white-space:pre-wrap;font-size:15px}
+.ticket .disc{padding:0 18px 14px;font-size:12px;color:var(--ink-3)}
+.ticket .row{display:flex;gap:8px;padding:0 18px 18px;flex-wrap:wrap}
+a.btn{display:inline-flex;align-items:center;text-decoration:none;color:inherit}
+
+.demo-bar{position:fixed;right:12px;bottom:12px;z-index:1000;display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px;font-size:12px;box-shadow:0 4px 14px #0002}
+.demo-bar button{border:1px solid var(--line-2);background:#fff;border-radius:8px;padding:4px 8px;min-height:32px;font-size:12px}
+
+/* ---------- mobile ---------- */
+@media (max-width: 860px){
+  .topbar{padding:10px 14px;flex-wrap:wrap;gap:8px}
+  .status .txt{display:none}
+  .filters{flex-wrap:nowrap;overflow-x:auto;padding:10px 14px;scrollbar-width:none}
+  .filters > *{flex:0 0 auto}
+  .go{margin-left:0}
+  .split{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  .viewtoggle{display:flex;gap:0;margin:10px 14px;background:#EAE3D3;border-radius:999px;padding:4px}
+  .viewtoggle button{flex:1;border:0;background:transparent;min-height:40px;border-radius:999px;font-weight:700;color:var(--ink-3)}
+  .viewtoggle button[aria-pressed=true]{background:var(--panel);color:var(--ink);box-shadow:0 1px 3px #0002}
+  .listpane{border-right:0}
+  .split[data-view=map] .listpane{display:none}
+  .split[data-view=list] .mappane{display:none}
+  .why{margin-left:16px} .actions{padding-left:16px}
+  .form{grid-template-columns:1fr 1fr}
+  .demo-bar{display:none}
+}
+/* login screen */
+#loginScreen{position:fixed;inset:0;z-index:2000;display:flex;align-items:center;justify-content:center;background:radial-gradient(1200px 800px at 50% 20%,#2b2620 0%,#171410 60%,#100e0b 100%);padding:20px}
+#loginScreen[hidden]{display:none}
+.login-card{width:min(400px,100%);background:#211d18;border:1px solid #3a332a;border-radius:20px;padding:36px 32px;text-align:center;box-shadow:0 30px 80px rgba(0,0,0,.5);animation:rise .35s ease}
+@keyframes rise{from{transform:translateY(14px);opacity:0}to{transform:none;opacity:1}}
+.login-mark{display:inline-flex;align-items:center;justify-content:center;width:64px;height:64px;border-radius:18px;background:linear-gradient(135deg,#e8b04b,#c97b2d);color:#1d1a14;margin-bottom:14px}
+.login-card h1{margin:0 0 8px;font-size:30px;letter-spacing:-.5px;color:#f5efe4}
+.login-sub{margin:0 0 22px;color:#b9ac97;font-size:14px;line-height:1.5}
+.login-label{display:block;text-align:left;font-size:12px;font-weight:600;color:#b9ac97;margin-bottom:6px}
+#loginName{width:100%;box-sizing:border-box;background:#14110d;border:1px solid #3a332a;color:#f5efe4;border-radius:12px;padding:12px 14px;font-size:16px;margin-bottom:14px}
+#loginName:focus{outline:none;border-color:#e8b04b}
+.login-go{width:100%;padding:13px;font-size:16px;border-radius:12px;margin-bottom:10px;cursor:pointer}
+.linklike{background:none;border:none;color:#8d8069;font-size:13px;cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.linklike:hover{color:#b9ac97}
+.userchip{display:flex;align-items:center;gap:7px;background:#211d18;border:1px solid #3a332a;color:#e8d9bd;border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer}
+.userchip .avatar{width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#e8b04b,#c97b2d);color:#1d1a14;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}
+.userchip[hidden]{display:none}
+/* peep-these-too section */
+.peep{margin:14px 0 4px;border-top:1px dashed #3a332a;padding-top:12px}
+.peep h3{margin:0 0 2px;font-size:14px;color:#f5efe4}
+.peep .peep-sub{margin:0 0 10px;font-size:12px;color:#8d8069}
+.peep-row{display:flex;gap:10px;align-items:flex-start;background:#1b1712;border:1px solid #332c22;border-radius:12px;padding:10px 12px;margin-bottom:8px}
+.peep-row .rank{flex:0 0 26px;height:26px;border-radius:50%;background:#2b251c;color:#e8b04b;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center}
+.peep-row .info{flex:1;min-width:0}
+.peep-row .nm{font-weight:700;color:#f5efe4;font-size:14px}
+.peep-row .meta{font-size:12px;color:#b9ac97;margin:2px 0}
+.peep-row .buzz{font-size:12.5px;color:#d8c9a8;line-height:1.45;margin:4px 0 0}
+.peep-row .buzz b{color:#e8b04b;font-weight:700}
+.peep-add{flex:0 0 auto;background:#2b251c;border:1px solid #4a4132;color:#e8d9bd;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}
+.peep-add:hover{background:#3a3226}
+.peep-add:disabled{opacity:.45;cursor:default}
+@media (prefers-reduced-motion: reduce){ *{animation:none!important;transition:none!important} }
+</style>
+</head>
+<body>
+<div id="loginScreen" hidden>
+  <div class="login-card" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+    <div class="login-mark" aria-hidden="true">
+      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M7 3v8M4 3v5a3 3 0 0 0 6 0V3M7 11v10M17 21V3c-2.5 1-4 4-4 8h4"/></svg>
+    </div>
+    <h1 id="loginTitle">Forkcast</h1>
+    <p class="login-sub">Dinner decisions, minus the group-chat chaos. Tell me what you're craving — I'll rank real spots and explain every pick.</p>
+    <form id="loginForm">
+      <label class="login-label" for="loginName">Your name</label>
+      <input id="loginName" type="text" placeholder="e.g. Ahdi" autocomplete="name" maxlength="40">
+      <button type="submit" class="primary login-go">Start exploring</button>
+    </form>
+    <button type="button" id="guestBtn" class="linklike">Continue as guest</button>
+  </div>
+</div>
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M7 3v8M4 3v5a3 3 0 0 0 6 0V3M7 11v10M17 21V3c-2.5 1-4 4-4 8h4"/></svg>
+    </span>Forkcast</div>
+    <div class="city">
+      <label for="city" class="sr-only">City</label>
+      <select id="city" aria-describedby="cityCount"><option>Loading cities…</option></select>
+      <span id="cityCount" class="count"></span>
+    </div>
+    <div class="status" aria-live="polite"><span class="dot" id="apiDot"></span><span class="txt" id="apiTxt">Connecting…</span><span id="demoTag"></span></div>
+    <button type="button" id="userChip" class="userchip" hidden title="Signed in"></button>
+  </header>
+
+  <details class="refine">
+    <summary>Refine with filters</summary>
+  <form class="filters" id="filters" aria-label="Constraints">
+    <div class="field">
+      <label for="cuisineIn">Cuisine</label>
+      <span id="cuisineChips" style="display:inline-flex;gap:4px"></span>
+      <input id="cuisineIn" type="text" placeholder="add + Enter" list="cuisineList" autocomplete="off">
+      <datalist id="cuisineList"><option>Italian</option><option>Mexican</option><option>Thai</option><option>Japanese</option><option>Sushi Bars</option><option>Pizza</option><option>Vietnamese</option><option>Indian</option><option>Korean</option><option>Mediterranean</option><option>Seafood</option><option>Chinese</option><option>Vegan</option></datalist>
+    </div>
+    <div class="field" role="group" aria-label="Max price">
+      <label>Max price</label>
+      <div class="seg" id="priceSeg"></div>
+    </div>
+    <div class="field">
+      <label for="minStars">Stars</label>
+      <select id="minStars"><option value="0">Any</option><option value="3.5">3.5+</option><option value="4" selected>4.0+</option><option value="4.5">4.5+</option></select>
+    </div>
+    <div class="field">
+      <label for="minReviews">Reviews</label>
+      <select id="minReviews"><option value="0">Any</option><option value="25">25+</option><option value="100" selected>100+</option><option value="500">500+</option></select>
+    </div>
+    <div class="field">
+      <label for="day">Day</label>
+      <select id="day"><option>Monday</option><option>Tuesday</option><option>Wednesday</option><option>Thursday</option><option selected>Friday</option><option>Saturday</option><option>Sunday</option></select>
+    </div>
+    <button type="button" class="toggle" id="openLate" aria-pressed="false">Open late</button>
+    <button type="button" class="toggle" data-flag="good_for_groups" aria-pressed="false">Groups</button>
+    <button type="button" class="toggle" data-flag="outdoor_seating" aria-pressed="false">Outdoor</button>
+    <button type="button" class="toggle" data-flag="takes_reservations" aria-pressed="false">Reservations</button>
+    <button type="submit" class="go" id="goBtn">Find picks</button>
+  </form>
+  </details>
+
+  <main class="split" id="split" data-view="list">
+    <div class="viewtoggle" role="group" aria-label="View">
+      <button type="button" id="vList" aria-pressed="true">List</button>
+      <button type="button" id="vMap" aria-pressed="false">Map</button>
+    </div>
+    <section class="listpane" id="listpane" aria-label="Conversation">
+      <div class="chatlog" id="chatlog" role="log" aria-label="Conversation"></div>
+      <form class="composer" id="askbar" aria-label="Ask in plain English">
+        <input id="askInput" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Ask in plain English — e.g. cheap sushi open late in Philadelphia"
+               aria-label="Describe what you're looking for">
+        <button type="submit" class="go" id="askBtn">Send</button>
+      </form>
+    </section>
+    <section class="mappane" aria-label="Map of picks">
+      <div id="map" role="region" aria-label="Map. Pins match the numbered list; use the list to select with a keyboard."></div>
+      <div id="mapOverlay"></div>
+    </section>
+  </main>
+</div>
+<div id="live" class="sr-only" aria-live="polite"></div>
+<div id="demoBar"></div>
+
+<script>
+/* =================================================================
+   Config + utilities
+   ================================================================= */
+const CFG = window.FORKCAST_CONFIG;
+const qs = new URLSearchParams(location.search);
+const API_BASE = (qs.get("api") || CFG.API_BASE).replace(/\/+$/, "");
+const DEMO = qs.get("demo") === "1";
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hasCoords = p => Number.isFinite(p.lat) && Number.isFinite(p.lng) && !(p.lat === 0 && p.lng === 0) && Math.abs(p.lat) <= 90 && Math.abs(p.lng) <= 180;
+const priceHTML = n => n ? `<span class="price" aria-label="price ${n} of 4"><b>${"$".repeat(n)}</b><i>${"$".repeat(4 - n)}</i></span>` : `<span class="price">Price n/a</span>`;
+const priceText = n => n ? "$".repeat(n) : "Price n/a";
+const fmtN = n => Number(n || 0).toLocaleString();
+const isMobile = () => matchMedia("(max-width: 860px)").matches;
+const announce = t => { const el = $("#live"); el.textContent = ""; setTimeout(() => el.textContent = t, 30); };
+
+/* =================================================================
+   API layer (real fetch, or the in-page mock when ?demo=1)
+   ================================================================= */
+class ApiError extends Error {}
+async function api(path, body) {
+  if (DEMO) return Mock.handle(path, body);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), CFG.REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(API_BASE + path, {
+      method: body ? "POST" : "GET",
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal
+    });
+    if (!res.ok) throw new ApiError(`${path} returned ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    throw new ApiError(e.name === "AbortError" ? "The dining service took too long to answer." : "Can't reach the dining service.");
+  } finally { clearTimeout(t); }
+}
+
+/* =================================================================
+   State
+   ================================================================= */
+const S = {
+  status: "idle",           // idle | loading | ready | error
+  error: "",
+  picks: [],
+  prevIds: null,            // Set of ids from the previous result, for added/kept diff
+  selectedId: null,
+  reasons: {},              // business_id -> {state:'loading'|'ok'|'fail', items:[]}
+  inviteFor: null,          // business_id when invitation view is open
+  invite: null,             // last /invite response
+  toast: "",
+  turns: [],               // conversation: {id, user, status, summary, notes, picks, prevIds}
+  turnSeq: 0,
+  hasSearched: false,
+  req: 0,
+  user: null,             // {name} from the login screen; null = guest
+  filters: { city: "", cuisines: ["Italian"], price_max: 3, min_stars: 4, min_reviews: 100, open_late: false, day: "Friday", flags: [], limit: CFG.DEFAULT_LIMIT }
+};
+
+/* =================================================================
+   Map
+   ================================================================= */
+const map = L.map("map", { zoomControl: true, keyboard: true, worldCopyJump: true }).setView([39.5, -98.35], 4);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+const legs = L.layerGroup().addTo(map);
+const markers = new Map(); // id -> L.marker
+
+function pinIcon(p, idx, cls) {
+  const top = idx === 0;
+  const c = ["pin", top ? "top" : "", cls].filter(Boolean).join(" ");
+  return L.divIcon({
+    className: "pin-wrap",
+    html: `<div class="${c}"><b><span>${idx + 1}</span></b></div>`,
+    iconSize: [44, 44], iconAnchor: [22, top ? 42 : 38], popupAnchor: [0, -38]
+  });
+}
+function pinClasses(p) {
+  const cls = [];
+  if (S.prevIds && !S.prevIds.has(p.business_id)) cls.push("new");
+  if (p.business_id === S.selectedId) cls.push("sel");
+  if (S.inviteFor && S.inviteFor !== p.business_id) cls.push("dim");
+  if (S.inviteFor === p.business_id) cls.push("invite");
+  return cls.join(" ");
+}
+function popupHTML(p) {
+  const m = (p.matched_cuisines && p.matched_cuisines.length ? p.matched_cuisines : p.categories.slice(0, 1)).join(", ");
+  return `<div class="pop"><h4>${esc(p.name)}</h4>
+    <div>★ <b>${p.stars}</b> × ${fmtN(p.review_count)} reviews · ${priceText(p.price_band)}</div>
+    <div class="m">${esc(m)}</div>
+    <div class="row">
+      <button class="primary" data-act="invite" data-id="${esc(p.business_id)}">Make invite</button>
+      <button data-act="details" data-id="${esc(p.business_id)}">Why this?</button>
+    </div></div>`;
+}
+
+function syncMarkers(animateNew) {
+  const picks = S.picks.slice(0, CFG.MAX_PINS);
+  const mapped = picks.filter(hasCoords);
+  const ids = new Set(mapped.map(p => p.business_id));
+  // remove stale pins (fade, then drop)
+  for (const [id, m] of markers) {
+    if (!ids.has(id)) {
+      const el = m.getElement()?.querySelector(".pin");
+      if (el) el.classList.add("leave");
+      markers.delete(id);
+      setTimeout(() => map.removeLayer(m), 230);
+    }
+  }
+  picks.forEach((p, idx) => {
+    if (!hasCoords(p)) return;
+    let m = markers.get(p.business_id);
+    const isNew = !m;
+    const cls = pinClasses(p) + (isNew && animateNew ? " enter" : "");
+    if (!m) {
+      m = L.marker([p.lat, p.lng], { icon: pinIcon(p, idx, cls), title: `${idx + 1}. ${p.name}`, alt: `${idx + 1}. ${p.name}`, riseOnHover: true, keyboard: true });
+      m.on("click", () => select(p.business_id, "map"));
+      m.addTo(map);
+      markers.set(p.business_id, m);
+    } else {
+      m.setIcon(pinIcon(p, idx, cls));
+      m.options.title = `${idx + 1}. ${p.name}`;
+    }
+    m._pick = p; m._idx = idx;
+    m.bindPopup(popupHTML(p), { closeButton: true, autoPanPadding: [40, 40] });
+    m.setZIndexOffset(idx === 0 ? 1000 : (p.business_id === S.selectedId ? 900 : 500 - idx));
+  });
+  layoutOverlaps();
+}
+
+/* Spider-offset: any pins whose true positions sit within 30px on screen
+   get fanned out in a ring with a leg back to the true spot. Recomputed on zoom. */
+function layoutOverlaps() {
+  legs.clearLayers();
+  const items = [...markers.values()].map(m => ({ m, ll: L.latLng(m._pick.lat, m._pick.lng) }));
+  items.forEach(it => it.pt = map.latLngToLayerPoint(it.ll));
+  const groups = [];
+  for (const it of items) {
+    const g = groups.find(g => g.some(o => o.pt.distanceTo(it.pt) < 30));
+    g ? g.push(it) : groups.push([it]);
+  }
+  for (const g of groups) {
+    if (g.length === 1) { g[0].m.setLatLng(g[0].ll); continue; }
+    g.sort((a, b) => a.m._idx - b.m._idx);
+    const c = g.reduce((a, it) => a.add(it.pt), L.point(0, 0)).divideBy(g.length);
+    const r = 22 + 7 * g.length;
+    g.forEach((it, i) => {
+      const a = -Math.PI / 2 + (i * 2 * Math.PI) / g.length;
+      const ll = map.layerPointToLatLng(c.add(L.point(r * Math.cos(a), r * Math.sin(a))));
+      it.m.setLatLng(ll);
+      L.polyline([ll, it.ll], { color: "#1D1B16", weight: 1.5, opacity: .55, dashArray: "3 3", interactive: false }).addTo(legs);
+      L.circleMarker(it.ll, { radius: 3, color: "#1D1B16", weight: 1, fillOpacity: 1, interactive: false }).addTo(legs);
+    });
+  }
+}
+map.on("zoomend", layoutOverlaps);
+
+function fitToPins() {
+  const pts = S.picks.slice(0, CFG.MAX_PINS).filter(hasCoords).map(p => [p.lat, p.lng]);
+  if (!pts.length) return;
+  if (pts.length === 1) map.setView(pts[0], 15, { animate: true });          // single pick: sensible zoom, not max
+  else map.fitBounds(pts, { padding: [60, 60], maxZoom: 16, animate: true });
+}
+
+document.addEventListener("click", e => {
+  const b = e.target.closest(".pop button");
+  if (!b) return;
+  const id = b.dataset.id;
+  if (b.dataset.act === "invite") openInvite(id);
+  if (b.dataset.act === "details") { if (isMobile()) setView("list"); focusCard(id, true); }
+});
+
+/* =================================================================
+   Selection (bidirectional)
+   ================================================================= */
+function select(id, from) {
+  S.selectedId = id;
+  const p = S.picks.find(x => x.business_id === id);
+  S.lastSelectedName = p?.name;
+  renderChat();
+  syncMarkers(false);
+  if (!p) return;
+  if (from === "map") {
+    focusCard(id, false);
+  } else {
+    const m = markers.get(id);
+    if (m) {
+      if (isMobile()) setView("map");
+      map.panTo(m.getLatLng(), { animate: true });
+      setTimeout(() => m.openPopup(), isMobile() ? 250 : 0);
+    }
+  }
+  announce(`Selected ${p.name}${hasCoords(p) ? "" : ". No map location for this one."}`);
+}
+function clearSelection() { S.selectedId = null; map.closePopup(); }
+function focusCard(id, focus) {
+  const li = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
+  if (!li) return;
+  li.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  if (focus) li.querySelector(".card-main").focus({ preventScroll: true });
+}
+
+/* =================================================================
+   Search + explain
+   ================================================================= */
+function body() {
+  const f = S.filters;
+  return { city: f.city, cuisines: f.cuisines, price_max: f.price_max, min_stars: f.min_stars, min_reviews: f.min_reviews, open_late: f.open_late, day: f.day, flags: f.flags, limit: f.limit };
+}
+function normPicks(arr) {
+  return (Array.isArray(arr) ? arr : []).slice(0, CFG.MAX_PINS).map(p => ({
+    ...p,
+    lat: p.lat == null ? null : Number(p.lat),
+    lng: p.lng == null ? null : Number(p.lng),
+    categories: p.categories || [], matched_cuisines: p.matched_cuisines || []
+  }));
+}
+function finishTurn(turn, r, before, my, label) {
+  const picks = normPicks(r.picks);
+  turn.status = picks.length ? "ready" : "empty";
+  turn.summary = r.summary || label || "";
+  turn.notes = r.notes || [];
+  turn.social = r.social || [];
+  turn.picks = picks; turn.prevIds = before;
+  S.prevIds = before; S.picks = picks;
+  S.status = "ready"; S.hasSearched = true;
+  // selected pick filtered out: clear gracefully, tell the user once
+  if (S.selectedId && !picks.some(p => p.business_id === S.selectedId)) {
+    const gone = S.lastSelectedName || "Your selected pick";
+    clearSelection();
+    S.toast = `${gone} no longer matches, so it was cleared.`;
+  }
+  render(true); scrollChat(); fitToPins();
+  const added = before ? picks.filter(p => !before.has(p.business_id)).length : 0;
+  announce(picks.length ? `${picks.length} picks loaded${before ? `, ${added} new` : ""}.` : "No picks match these constraints.");
+  loadReasons(turn, my);
+}
+function failTurn(turn, e) {
+  turn.status = "error";
+  turn.error = e.message || "Something went wrong.";
+  S.status = "error";
+  render(); scrollChat();
+  announce("Search failed. Your words are still in the box below.");
+}
+function summaryText() {
+  // one-line description of the manual filter set, used as the turn's "phrase"
+  const f = S.filters, bits = [];
+  if (f.cuisines.length) bits.push(f.cuisines.join(" / "));
+  if (f.price_max != null) bits.push("$".repeat(f.price_max) + " and under");
+  if (f.min_stars) bits.push(f.min_stars + "+ stars");
+  if (f.min_reviews) bits.push(fmtN(f.min_reviews) + "+ reviews");
+  if (f.open_late) bits.push("open late");
+  if (f.day && f.day !== "Any day") bits.push("open " + f.day + "s");
+  if (f.flags.length) bits.push(f.flags.map(x => x.replace(/_/g, " ")).join(", "));
+  const where = f.city ? ` in ${f.city}` : "";
+  return bits.length ? `Here's what I found for ${bits.join(", ")}${where}:` : `Here's what I found${where}:`;
+}
+async function search() {
+  // manual filter path: the "phrase" is the filter description
+  const my = ++S.req;
+  const before = latestIds();
+  const turn = addTurn(summaryText());
+  S.status = "loading"; S.error = ""; S.inviteFor = null;
+  render(); scrollChat();
+  try {
+    const data = await api("/search", body());
+    if (my !== S.req) return;                          // stale response, a newer search is in flight
+    finishTurn(turn, { picks: data.picks, summary: summaryText(), notes: data.notes || [], social: data.social || [] }, before, my);
+  } catch (e) {
+    if (my !== S.req) return;
+    failTurn(turn, e);
+  }
+}
+async function ask(text) {
+  // primary product interaction: the user types a phrase, the backend parses it
+  const my = ++S.req;
+  const before = latestIds();
+  const turn = addTurn(text);
+  S.status = "loading"; S.error = ""; S.inviteFor = null;
+  $("#askInput").value = "";
+  render(); scrollChat();
+  try {
+    const r = await api("/ask", { text, filters: S.hasSearched ? S.filters : null });
+    if (my !== S.req) return;
+    S.filters = r.filters; renderFilters();   // sync the widgets with what was parsed
+    finishTurn(turn, r, before, my);
+  } catch (e) {
+    if (my !== S.req) return;
+    // keep their words so retry is one tap
+    $("#askInput").value = text;
+    failTurn(turn, e);
+  }
+}
+async function loadReasons(turn, my) {
+  const filters = body();
+  await Promise.all(turn.picks.map(async p => {
+    if (S.reasons[p.business_id]?.state === "ok" && S.reasons[p.business_id].key === JSON.stringify(filters)) return;
+    S.reasons[p.business_id] = { state: "loading", key: JSON.stringify(filters), items: [] };
+    patchReasons(p.business_id, turn.id);
+    try {
+      const r = await api("/explain", { business_id: p.business_id, matched_cuisines: p.matched_cuisines, filters });
+      if (my !== S.req) return;
+      S.reasons[p.business_id] = { state: "ok", key: JSON.stringify(filters), items: r.reasons || [] };
+    } catch (e) {
+      if (my !== S.req) return;
+      S.reasons[p.business_id] = { state: "fail", items: [] };
+    }
+    patchReasons(p.business_id, turn.id);
+  }));
+}
+
+
+function reasonsHTML(id, tid) {
+  const eid = `why-t${tid}-${id}`;
+  const r = S.reasons[id];
+  if (!r || r.state === "loading") return `<div class="why" id="${eid}"><h3>Why this pick</h3><div class="sk" style="height:12px;width:90%;margin:6px 0"></div><div class="sk" style="height:12px;width:70%"></div></div>`;
+  if (r.state === "fail" || !r.items.length) return `<div class="why" id="${eid}"><h3>Why this pick</h3><div class="muted">Reasons unavailable right now. Ranking still applies.</div></div>`;
+  return `<div class="why" id="${eid}"><h3>Why this pick</h3><ul>${r.items.slice(0, 4).map(t => `<li>${esc(t)}</li>`).join("")}</ul></div>`;
+}
+function patchReasons(id, tid) {
+  const el = document.getElementById(`why-t${tid}-${id}`);
+  if (el) el.outerHTML = reasonsHTML(id, tid);
+}
+function cardHTML(p, idx, tid) {
+  const top = idx === 0, sel = p.business_id === S.selectedId, onMap = hasCoords(p);
+  const isNew = S.prevIds && !S.prevIds.has(p.business_id);
+  const kept = S.prevIds && !isNew;
+  const matched = new Set((p.matched_cuisines || []).map(s => s.toLowerCase()));
+  const cats = [...new Set([...(p.matched_cuisines || []), ...p.categories])].slice(0, 5);
+  return `<li class="card ${top ? "top" : ""} ${sel ? "selected" : ""} ${onMap ? "" : "nomap"} ${isNew ? "enter" : ""}" data-id="${esc(p.business_id)}">
+    <button class="card-main" type="button" aria-pressed="${sel}" aria-label="${idx + 1}. ${esc(p.name)}, ${p.stars} stars, ${fmtN(p.review_count)} reviews${onMap ? "" : ", not on map"}">
+      <span class="rank" aria-hidden="true">${idx + 1}</span>
+      <span>
+        <span class="name-row"><span class="name">${esc(p.name)}</span>
+          ${top ? `<span class="badge top">Top pick</span>` : ""}
+          ${isNew ? `<span class="badge new">New</span>` : ""}${kept ? `<span class="badge kept">Kept</span>` : ""}
+          ${onMap ? "" : `<span class="badge nomap">No map location</span>`}
+        </span>
+        <span class="meta"><span><span class="stars">★ ${p.stars}</span> × ${fmtN(p.review_count)} reviews</span>${priceHTML(p.price_band)}</span>
+        <span class="addr" style="display:block">${esc(p.address)}${p.city ? `, ${esc(p.city)}` : ""}${p.state ? `, ${esc(p.state)}` : ""}</span>
+        <span class="cuis">${cats.map(c => `<span class="${matched.has(c.toLowerCase()) ? "m" : ""}">${esc(c)}</span>`).join("")}</span>
+      </span>
+    </button>
+    ${reasonsHTML(p.business_id, tid)}
+    <div class="actions">
+      <button class="btn primary" type="button" data-invite="${esc(p.business_id)}">Make invite</button>
+      ${onMap ? `<button class="btn" type="button" data-show="${esc(p.business_id)}">Show on map</button>` : ""}
+      ${Number.isFinite(p.score) ? `<span class="score" title="Ranking score">score ${Number(p.score).toFixed(2)}</span>` : ""}
+    </div>
+  </li>`;
+}
+function relaxButtons() {
+  const f = S.filters, out = [];
+  if (f.flags.length) out.push(`<button class="btn" data-relax="flag">Drop “${esc(f.flags.at(-1).replace(/_/g, " "))}”</button>`);
+  if (f.open_late) out.push(`<button class="btn" data-relax="late">Don't require open late</button>`);
+  if (f.price_max < 4) out.push(`<button class="btn" data-relax="price">Allow ${"$".repeat(f.price_max + 1)}</button>`);
+  if (f.min_stars > 3.5) out.push(`<button class="btn" data-relax="stars">Accept 3.5★+</button>`);
+  if (f.min_reviews > 25) out.push(`<button class="btn" data-relax="reviews">Accept 25+ reviews</button>`);
+  if (f.cuisines.length) out.push(`<button class="btn" data-relax="cuisine">Any cuisine</button>`);
+  return out.slice(0, 3).join("");
+}
+
+/* =================================================================
+   Chat engine: the conversation IS the interface.
+   Turns accumulate in S.turns; the map/pins always follow the latest turn.
+   ================================================================= */
+function latestReadyTurn() {
+  for (let i = S.turns.length - 1; i >= 0; i--) {
+    const s = S.turns[i].status;
+    if (s === "ready" || s === "empty") return S.turns[i];
+  }
+  return null;
+}
+function latestIds() {
+  const t = latestReadyTurn();
+  return t ? new Set(t.picks.map(p => p.business_id)) : null;
+}
+function addTurn(user) {
+  const t = { id: ++S.turnSeq, user, status: "loading", summary: "", notes: [], picks: [], prevIds: null, error: "" };
+  S.turns.push(t);
+  return t;
+}
+function scrollChat() {
+  const log = $("#chatlog");
+  if (log) log.scrollTop = log.scrollHeight;
+}
+function greetHTML() {
+  const ex = ["cheap sushi open late in Philadelphia", "romantic Italian for two on Friday", "tacos with outdoor seating in Tampa"];
+  const hey = S.user?.name ? `Hey ${esc(S.user.name.split(" ")[0])}, I'm Forkcast.` : `Hey, I'm Forkcast.`;
+  return `<div class="turn"><div class="abubble greet">
+    <p class="asummary"><b>${hey}</b> Tell me what you're craving in plain English — I'll parse it, rank real spots from 64k venues, and explain every pick.</p>
+    <div class="ex">${ex.map(x => `<button type="button" data-ex="${esc(x)}">${esc(x)}</button>`).join("")}</div>
+    <p class="anote" style="margin:10px 0 0">Numbered pins match the map. The big pin is the top pick.</p>
+  </div></div>`;
+}
+function turnHTML(t) {
+  const u = `<div class="ububble">${esc(t.user)}</div>`;
+  if (t.status === "loading")
+    return `<div class="turn">${u}<div class="abubble" aria-label="Thinking"><span class="typing" aria-hidden="true"><i></i><i></i><i></i></span></div></div>`;
+  if (t.status === "error")
+    return `<div class="turn">${u}<div class="abubble err" role="alert"><h2>Couldn't reach the kitchen</h2><p class="asummary">${esc(t.error || "Something went wrong.")} Your words are still in the box below — hit Send to retry.</p><p style="font-size:12px;color:var(--ink-3)">Backend: <code>${esc(DEMO ? "demo mock" : API_BASE)}</code></p></div></div>`;
+  const fixes = t.notes.filter(n => /^showing /i.test(n));
+  const missed = t.notes.filter(n => !/^showing /i.test(n));
+  const notes = (fixes.length ? `<p class="anote">🔧 ${esc(fixes.join(" "))}</p>` : "")
+    + (missed.length ? `<p class="anote">Didn't catch: ${esc(missed.join(", "))}</p>` : "");
+  let inner;
+  if (t.status === "empty") {
+    inner = `<p class="asummary">${esc(t.summary || "Nothing matches all of that.")}</p>${notes}<p class="anote">Loosen one thing:</p><div class="row">${relaxButtons()}</div>`;
+  } else {
+    const saved = S.prevIds;
+    S.prevIds = t.prevIds;   // cardHTML reads the global; scope it per turn
+    const cards = t.picks.map((p, i) => cardHTML(p, i, t.id)).join("");
+    S.prevIds = saved;
+    const added = t.prevIds ? t.picks.filter(p => !t.prevIds.has(p.business_id)).length : 0;
+    inner = `<p class="asummary">${esc(t.summary)}</p>${notes}<ol class="cards">${cards}</ol>${peepHTML(t)}
+      <p class="turnfoot">${t.picks.length} pick${t.picks.length > 1 ? "s" : ""}${t.prevIds ? ` · <b>${added} new</b>, ${t.picks.length - added} kept` : ""}</p>`;
+  }
+  return `<div class="turn">${u}<div class="abubble">${inner}</div></div>`;
+}
+function peepHTML(t) {
+  // "Peep these too" — Instagram-buzzing spots not already in the picks.
+  const spots = (t.social || []).filter(s => !t.picks.some(p => p.business_id === s.business_id)).slice(0, 4);
+  if (!spots.length) return "";
+  const rows = spots.map(s => `
+    <div class="peep-row">
+      <div class="info">
+        <div class="nm">${esc(s.name)}</div>
+        <div class="meta">★ <b>${s.stars}</b> × ${fmtN(s.review_count)} reviews · ${priceText(s.price_band)}${s.cuisine ? ` · ${esc(s.cuisine)}` : ""}</div>
+        <p class="buzz"><b>📸</b> ${esc(s.buzz)}</p>
+      </div>
+      <button type="button" class="peep-add" data-act="peep-add" data-id="${esc(s.business_id)}" data-turn="${t.id}">+ Add</button>
+    </div>`).join("");
+  return `<div class="peep"><h3>👀 Peep these too</h3><p class="peep-sub">Buzzing on Instagram${S.filters.city ? ` in ${esc(S.filters.city)}` : ""} — tap + to add one to your list</p>${rows}</div>`;
+}
+function peepAdd(turnId, businessId) {
+  const turn = S.turns.find(x => x.id === turnId);
+  const spot = turn?.social?.find(s => s.business_id === businessId);
+  if (!turn || !spot || turn.picks.some(p => p.business_id === businessId)) return;
+  const pick = {
+    business_id: spot.business_id, name: spot.name, address: spot.address,
+    city: spot.city, state: spot.state, postal_code: null,
+    lat: spot.lat, lng: spot.lng, stars: spot.stars, review_count: spot.review_count,
+    price_band: spot.price_band, categories: spot.cuisine ? [spot.cuisine.toLowerCase()] : [],
+    matched_cuisines: [], score: 0,
+  };
+  turn.picks.push(pick);
+  if (S.turns.length && S.turns[S.turns.length - 1].id === turnId) {
+    S.picks = turn.picks;   // latest turn: keep the map in sync
+  }
+  announce(`${spot.name} added to your picks.`);
+  render(true); scrollChat(); fitToPins();
+}
+function renderChat() {
+  const log = $("#chatlog");
+  if (S.inviteFor) return renderInvite(log);
+  log.innerHTML = (S.turns.length ? "" : greetHTML())
+    + S.turns.map(turnHTML).join("")
+    + (S.toast ? `<div class="toast" role="status"><span>${esc(S.toast)}</span><button data-act="toast">OK</button></div>` : "");
+}
+
+
+function renderMapOverlay() {
+  const o = $("#mapOverlay");
+  const mapped = S.picks.filter(hasCoords).length;
+  if (S.status === "loading") { o.innerHTML = `<div class="overlay dim"><div class="box"><div class="spinner"></div><h2>Finding picks…</h2><p>Scoring venues in ${esc(S.filters.city)}.</p></div></div>`; return; }
+  if (S.status === "error") { o.innerHTML = `<div class="overlay dim"><div class="box" role="alert"><h2>Map is waiting on the service</h2><p>We couldn't load picks.</p><button class="btn primary" data-act="retry">Retry</button></div></div>`; return; }
+  if (S.status === "ready" && !S.picks.length) { o.innerHTML = `<div class="overlay dim"><div class="box"><h2>No pins yet</h2><p>No venue matched every constraint. Loosen one on the left and the map fills back in.</p></div></div>`; return; }
+  if (S.status === "ready" && mapped === 0) { o.innerHTML = `<div class="overlay dim"><div class="box"><h2>No locations for these picks</h2><p>They're in the list, but the dataset has no coordinates for them.</p></div></div>`; return; }
+  if (S.status === "idle") { o.innerHTML = `<div class="overlay"><div class="box"><h2>Your picks land here</h2><p>Numbered pins match the ranked list. The top pick is the big one.</p></div></div>`; return; }
+  o.innerHTML = mapped < S.picks.length ? `<div class="map-note">${mapped} of ${S.picks.length} picks on the map</div>` : "";
+}
+
+function render(animateNew) {
+  renderChat();
+  renderMapOverlay();
+  syncMarkers(!!animateNew);
+  $("#goBtn").disabled = S.status === "loading";
+  $("#goBtn").textContent = S.status === "loading" ? "Searching…" : (S.hasSearched ? "Update picks" : "Find picks");
+  const ab = $("#askBtn");
+  if (ab) { ab.disabled = S.status === "loading"; ab.textContent = S.status === "loading" ? "…" : "Send"; }
+  if (S.selectedId) S.lastSelectedName = S.picks.find(p => p.business_id === S.selectedId)?.name;
+}
+
+/* =================================================================
+   Invitation view
+   ================================================================= */
+function openInvite(id) {
+  S.inviteFor = id; S.invite = null; S.selectedId = id;
+  map.closePopup();
+  if (isMobile()) setView("list");
+  render();
+  const p = S.picks.find(x => x.business_id === id);
+  if (p && hasCoords(p)) map.flyTo([p.lat, p.lng], Math.max(map.getZoom(), 16), { duration: .6 });
+  setTimeout(() => $("#invSize")?.focus(), 50);
+}
+function closeInvite() {
+  const id = S.inviteFor;
+  S.inviteFor = null; S.invite = null;
+  render(); fitToPins();
+  if (id) setTimeout(() => focusCard(id, true), 50);
+}
+function directionsURL(p) {
+  return hasCoords(p)
+    ? `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`
+    : `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent([p.name, p.address, p.city, p.state].filter(Boolean).join(", "))}`;
+}
+function renderInvite(pane) {
+  const p = S.picks.find(x => x.business_id === S.inviteFor);
+  if (!p) { S.inviteFor = null; return renderChat(); }
+  const inv = S.invite;
+  pane.innerHTML = `<div class="invite">
+    <button class="back" data-act="back">← Back to picks</button>
+    <h1>Invite the crew to ${esc(p.name)}</h1>
+    <p class="sub">★ ${p.stars} × ${fmtN(p.review_count)} reviews · ${priceText(p.price_band)} · ${esc(p.address)}</p>
+    <form class="form" id="invForm">
+      <label>Party size<input id="invSize" type="number" min="1" max="30" value="${inv?.party_size ?? 4}" required></label>
+      <label>Day<select id="invDay">${["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].map(d => `<option ${d === S.filters.day ? "selected" : ""}>${d}</option>`).join("")}</select></label>
+      <label>Time<input id="invTime" type="time" value="19:30" required></label>
+      <button class="go" style="grid-column:1/-1;margin:0" type="submit" id="invGo">${inv ? "Regenerate invite" : "Write the invite"}</button>
+    </form>
+    <div id="invOut" aria-live="polite">${inv ? ticketHTML(p, inv) : `<p class="sub">Directions: <a href="${directionsURL(p)}" target="_blank" rel="noopener">open in Google Maps</a></p>`}</div>
+  </div>`;
+}
+function fmtCost(c) {
+  // Real API returns {per_person:[lo,hi], total:[lo,hi], note}; mock returns a string.
+  if (c == null) return "n/a";
+  if (typeof c === "string") return c;
+  if (Array.isArray(c.total)) return `~$${c.total[0]}–$${c.total[1]} total (estimate)`;
+  return c.note || "n/a";
+}
+function ticketHTML(p, inv) {
+  if (inv.error) return `<div class="state err" role="alert" style="margin:0"><h2>Couldn't write the invite</h2><p>${esc(inv.error)}</p><button class="btn primary" data-act="invretry">Retry</button></div>`;
+  return `<div class="ticket">
+    <div class="hd"><div class="k" style="color:#fff9">You're invited to</div><div class="n">${esc(inv.restaurant || p.name)}</div><div style="opacity:.8;font-size:14px">${esc(inv.address || p.address)}</div></div>
+    <div class="grid"><div><div class="k">When</div><div class="v">${esc(inv.time)}</div></div><div><div class="k">Party</div><div class="v">${esc(inv.party_size)}</div></div><div><div class="k">Est. cost</div><div class="v">${esc(fmtCost(inv.cost_estimate))}</div></div></div>
+    <div class="msg" id="invText">${esc(inv.text)}</div>
+    ${inv.disclaimer ? `<div class="disc">${esc(inv.disclaimer)}</div>` : ""}
+    <div class="row"><button class="btn primary" data-act="copy">Copy invite</button><a class="btn" href="${directionsURL(p)}" target="_blank" rel="noopener">Directions ↗</a></div>
+  </div>`;
+}
+async function sendInvite() {
+  const p = S.picks.find(x => x.business_id === S.inviteFor);
+  if (!p) return;
+  const size = Math.max(1, Math.min(30, parseInt($("#invSize").value || "4", 10)));
+  const payload = { business_id: p.business_id, matched_cuisines: p.matched_cuisines, party_size: size, day: $("#invDay").value, time: $("#invTime").value };
+  $("#invGo").disabled = true; $("#invGo").textContent = "Writing…";
+  try { S.invite = await api("/invite", payload); }
+  catch (e) { S.invite = { error: e.message, party_size: size }; }
+  if (S.inviteFor === p.business_id) { renderChat(); announce(S.invite.error ? "Invite failed." : "Invite ready."); }
+}
+
+/* =================================================================
+   Filters UI
+   ================================================================= */
+function renderFilters() {
+  const f = S.filters;
+  $("#cuisineChips").innerHTML = f.cuisines.map((c, i) => `<span class="chip">${esc(c)}<button type="button" aria-label="Remove ${esc(c)}" data-rmc="${i}">×</button></span>`).join("");
+  $("#priceSeg").innerHTML = [1, 2, 3, 4].map(n => `<button type="button" aria-pressed="${n === f.price_max}" aria-label="Up to ${n} dollar signs" data-price="${n}">${"$".repeat(n)}</button>`).join("");
+  $("#openLate").setAttribute("aria-pressed", f.open_late);
+  document.querySelectorAll("[data-flag]").forEach(b => b.setAttribute("aria-pressed", f.flags.includes(b.dataset.flag)));
+}
+let autoT;
+function changed() {                       // after first search, constraint edits re-rank live
+  renderFilters();
+  if (!S.hasSearched) return;
+  clearTimeout(autoT); autoT = setTimeout(search, 350);
+}
+$("#filters").addEventListener("submit", e => { e.preventDefault(); clearTimeout(autoT); commitCuisine(); search(); });
+$("#askbar").addEventListener("submit", e => {
+  e.preventDefault();
+  const v = $("#askInput").value.trim();
+  if (v) ask(v);
+});
+function commitCuisine() {
+  // apply whatever is typed the moment the field loses focus or Enter is hit,
+  // so the visible filter bar can never disagree with the applied filters
+  const inp = $("#cuisineIn");
+  const v = inp.value.trim();
+  if (v && !S.filters.cuisines.some(c => c.toLowerCase() === v.toLowerCase())) { S.filters.cuisines.push(v); changed(); }
+  inp.value = "";
+}
+$("#cuisineIn").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  commitCuisine();
+});
+$("#cuisineIn").addEventListener("blur", commitCuisine);
+$("#filters").addEventListener("click", e => {
+  const t = e.target.closest("button"); if (!t) return;
+  if (t.dataset.rmc != null) { S.filters.cuisines.splice(+t.dataset.rmc, 1); changed(); }
+  else if (t.dataset.price) { S.filters.price_max = +t.dataset.price; changed(); }
+  else if (t.id === "openLate") { S.filters.open_late = !S.filters.open_late; changed(); }
+  else if (t.dataset.flag) { const fl = S.filters.flags, i = fl.indexOf(t.dataset.flag); i < 0 ? fl.push(t.dataset.flag) : fl.splice(i, 1); changed(); }
+});
+$("#minStars").addEventListener("change", e => { S.filters.min_stars = +e.target.value; changed(); });
+$("#minReviews").addEventListener("change", e => { S.filters.min_reviews = +e.target.value; changed(); });
+$("#day").addEventListener("change", e => { S.filters.day = e.target.value; changed(); });
+$("#city").addEventListener("change", e => {
+  S.filters.city = e.target.value;
+  const o = e.target.selectedOptions[0];
+  $("#cityCount").textContent = o?.dataset.count ? `${fmtN(o.dataset.count)} venues` : "";
+  S.prevIds = null; clearSelection(); changed();
+});
+
+/* list pane delegation */
+$("#listpane").addEventListener("click", e => {
+  const t = e.target.closest("button, a"); if (!t) return;
+  const card = t.closest(".card");
+  if (t.classList.contains("card-main") && card) return select(card.dataset.id, "list");
+  if (t.dataset.ex) return ask(t.dataset.ex);
+  if (t.dataset.show) return select(t.dataset.show, "list");
+  if (t.dataset.invite) return openInvite(t.dataset.invite);
+  const act = t.dataset.act;
+  if (act === "retry" || act === "go") search();
+  if (act === "askretry") return ask(t.dataset.text || "");
+  if (act === "toast") { S.toast = ""; renderChat(); }
+  if (act === "peep-add") return peepAdd(+t.dataset.turn, t.dataset.id);
+  if (act === "back") closeInvite();
+  if (act === "invretry") sendInvite();
+  if (act === "copy") navigator.clipboard?.writeText($("#invText").textContent).then(() => { t.textContent = "Copied"; announce("Invite copied"); });
+  const r = t.dataset.relax, f = S.filters;
+  if (r) {
+    if (r === "flag") f.flags.pop();
+    if (r === "late") f.open_late = false;
+    if (r === "price") f.price_max = Math.min(4, f.price_max + 1);
+    if (r === "stars") { f.min_stars = 3.5; $("#minStars").value = "3.5"; }
+    if (r === "reviews") { f.min_reviews = 25; $("#minReviews").value = "25"; }
+    if (r === "cuisine") f.cuisines = [];
+    renderFilters(); search();
+  }
+});
+$("#listpane").addEventListener("submit", e => { if (e.target.id === "invForm") { e.preventDefault(); sendInvite(); } });
+$("#mapOverlay").addEventListener("click", e => { if (e.target.closest("[data-act=retry]")) search(); });
+/* keyboard: arrow keys move between cards, Home/End jump, Esc leaves invite */
+$("#listpane").addEventListener("keydown", e => {
+  if (e.key === "Escape" && S.inviteFor) return closeInvite();
+  if (!e.target.classList.contains("card-main")) return;
+  const all = [...document.querySelectorAll(".card-main")];
+  const i = all.indexOf(e.target);
+  let n = null;
+  if (e.key === "ArrowDown") n = Math.min(all.length - 1, i + 1);
+  if (e.key === "ArrowUp") n = Math.max(0, i - 1);
+  if (e.key === "Home") n = 0;
+  if (e.key === "End") n = all.length - 1;
+  if (n != null) { e.preventDefault(); all[n].focus(); }
+});
+
+/* mobile view toggle */
+function setView(v) {
+  $("#split").dataset.view = v;
+  $("#vList").setAttribute("aria-pressed", v === "list");
+  $("#vMap").setAttribute("aria-pressed", v === "map");
+  if (v === "map") setTimeout(() => { map.invalidateSize(); layoutOverlaps(); if (!S.selectedId) fitToPins(); }, 30);
+}
+$("#vList").onclick = () => setView("list");
+$("#vMap").onclick = () => setView("map");
+addEventListener("resize", () => { map.invalidateSize(); });
+
+/* =================================================================
+   Boot: cities + health
+   ================================================================= */
+/* =================================================================
+   Login screen (lightweight demo auth; name stored locally)
+   ================================================================= */
+const UserStore = {
+  get() { try { return JSON.parse(localStorage.getItem("forkcast_user") || "null"); } catch { return null; } },
+  set(name) {
+    const u = name ? { name } : null;
+    try { u ? localStorage.setItem("forkcast_user", JSON.stringify(u)) : localStorage.removeItem("forkcast_user"); } catch {}
+    return u;
+  }
+};
+function renderUserChip() {
+  const chip = $("#userChip");
+  if (!S.user?.name) { chip.hidden = true; return; }
+  chip.hidden = false;
+  chip.innerHTML = `<span class="avatar">${esc(S.user.name.trim()[0].toUpperCase())}</span><span>${esc(S.user.name)}</span>`;
+  chip.title = "Signed in as " + S.user.name + " — click to sign out";
+}
+function showLogin() { $("#loginScreen").hidden = false; setTimeout(() => $("#loginName")?.focus(), 60); }
+function hideLogin() { $("#loginScreen").hidden = true; }
+function initLogin() {
+  S.user = UserStore.get();
+  renderUserChip();
+  if (!S.user) {
+    showLogin();
+    render();   // greeting renders under the overlay; personalized once they sign in
+  }
+  $("#loginForm").addEventListener("submit", e => {
+    e.preventDefault();
+    const name = $("#loginName").value.trim().slice(0, 40);
+    S.user = UserStore.set(name || null);
+    hideLogin(); renderUserChip(); render(); scrollChat();
+    announce(S.user ? `Welcome, ${S.user.name}.` : "Continuing as guest.");
+  });
+  $("#guestBtn").addEventListener("click", () => {
+    S.user = UserStore.set(null);
+    hideLogin(); renderUserChip(); render(); scrollChat();
+    announce("Continuing as guest.");
+  });
+  $("#userChip").addEventListener("click", () => {
+    S.user = UserStore.set(null);
+    renderUserChip(); showLogin(); render();
+  });
+}
+
+async function boot() {
+  renderFilters(); render(); initLogin();
+  if (DEMO) $("#demoTag").innerHTML = `<span class="demo-tag">DEMO DATA</span>`;
+  const dot = $("#apiDot"), txt = $("#apiTxt");
+  dot.className = "dot wait";
+  try {
+    const { cities = [] } = await api("/cities");
+    const sorted = [...cities].sort((a, b) => b.venue_count - a.venue_count);
+    $("#city").innerHTML = sorted.map(c => `<option value="${esc(c.name)}" data-count="${c.venue_count}">${esc(c.name)}</option>`).join("");
+    S.filters.city = sorted[0]?.name || "";
+    $("#cityCount").textContent = sorted[0] ? `${fmtN(sorted[0].venue_count)} venues` : "";
+    dot.className = "dot ok"; txt.textContent = DEMO ? "Demo backend" : "Connected";
+  } catch (e) {
+    dot.className = "dot bad"; txt.textContent = "Service offline";
+    // city picker degrades to free text so the demo isn't dead
+    $("#city").outerHTML = `<input id="city" type="text" placeholder="City" value="Philadelphia" aria-label="City">`;
+    S.filters.city = "Philadelphia";
+    $("#city").addEventListener("change", ev => { S.filters.city = ev.target.value; changed(); });
+    S.status = "error"; S.error = e.message; render();
+  }
+}
+
+/* =================================================================
+   Mock backend (only used with ?demo=1). Same contract as FastAPI.
+   ================================================================= */
+const Mock = {
+  fail: false,
+  cities: [{ name: "Philadelphia", venue_count: 14569 }, { name: "Tampa", venue_count: 9050 }, { name: "Indianapolis", venue_count: 7540 }, { name: "Nashville", venue_count: 6971 }, { name: "Tucson", venue_count: 9250 }, { name: "New Orleans", venue_count: 6209 }],
+  v: [
+    // name, lat, lng, stars, reviews, price, cats, late, flags
+    ["Nonna Rosa Trattoria", 39.9496, -75.1618, 4.5, 1284, 2, ["Italian", "Pasta Shops"], true, ["good_for_groups", "takes_reservations"]],
+    ["Via Sesto", 39.9416, -75.1497, 4.5, 812, 3, ["Italian", "Wine Bars"], true, ["takes_reservations", "outdoor_seating"]],
+    ["Bar Casale", 39.9533, -75.1590, 4.0, 455, 2, ["Italian", "Pizza"], true, ["good_for_groups"]],
+    ["Pasta Lab Stall", 39.9533, -75.1590, 4.5, 390, 1, ["Italian", "Food Stands"], false, ["good_for_groups"]],   // same coords as Bar Casale: food hall
+    ["Osteria Linden", 39.9612, -75.1553, 4.0, 623, 3, ["Italian", "Cocktail Bars"], true, ["outdoor_seating", "takes_reservations"]],
+    ["Salumeria Nove", null, null, 4.5, 211, 2, ["Italian", "Delis"], false, []],                                    // missing coords
+    ["Trattoria Fiume", 39.9387, -75.1702, 4.0, 1033, 2, ["Italian", "Seafood"], true, ["good_for_groups", "outdoor_seating"]],
+    ["Casa Maíz", 39.9357, -75.1585, 4.5, 976, 2, ["Mexican", "Tacos"], true, ["good_for_groups", "outdoor_seating"]],
+    ["Lemongrass House", 39.9551, -75.1545, 4.0, 540, 2, ["Thai"], false, ["takes_reservations"]],
+    ["Kiji Sushi Counter", 39.9480, -75.1440, 4.5, 702, 4, ["Japanese", "Sushi Bars"], false, ["takes_reservations"]],
+    ["Pho Saigon Corner", 39.9368, -75.1560, 4.0, 1190, 1, ["Vietnamese"], true, ["good_for_groups"]],
+    ["Mezze & Co", 39.9520, -75.1740, 4.0, 330, 2, ["Mediterranean"], false, ["outdoor_seating", "good_for_groups"]]
+  ],
+  social: [
+    // mirrors dataset/social_signals.json (real Instagram buzz, Sep 2026)
+    { business_id: "soc_kalaya", name: "Kalaya", address: "764 S 9th St", city: "Philadelphia", state: "PA", lat: 39.9347, lng: -75.1587, stars: 4.5, review_count: 272, price_band: 2, cuisine: "Thai", buzz: "Called out as acclaimed Thai in a 4.8K-like food tour reel." },
+    { business_id: "soc_suraya", name: "Suraya", address: "1528 Frankford Ave", city: "Philadelphia", state: "PA", lat: 39.9730, lng: -75.1350, stars: 4.5, review_count: 1121, price_band: 3, cuisine: "Lebanese", buzz: "Named in comments as a must-try Philly spot." },
+    { business_id: "soc_zahav", name: "Zahav", address: "237 St James Pl", city: "Philadelphia", state: "PA", lat: 39.9465, lng: -75.1438, stars: 4.5, review_count: 3065, price_band: 3, cuisine: "Israeli", buzz: "Frequently cited among Philly's best on food socials." },
+    { business_id: "soc_fss", name: "Friday Saturday Sunday", address: "261 S 21st St", city: "Philadelphia", state: "PA", lat: 39.9497, lng: -75.1714, stars: 4.5, review_count: 287, price_band: 4, cuisine: "American", buzz: "Michelin-recognized tasting menu in a viral reel." },
+    { business_id: "soc_angelos", name: "Angelo's Pizzeria", address: "736 S 9th St", city: "Philadelphia", state: "PA", lat: 39.9352, lng: -75.1586, stars: 4.5, review_count: 393, price_band: 1, cuisine: "Pizza", buzz: "Local institution at the center of cheesesteak/pizza debates." },
+    { business_id: "soc_jrp", name: "John's Roast Pork", address: "14 Snyder Ave", city: "Philadelphia", state: "PA", lat: 39.9266, lng: -75.1612, stars: 4.5, review_count: 1564, price_band: 1, cuisine: "Sandwiches", buzz: "The $9 roast pork sandwich from the viral food tour." }
+  ],
+  wait: ms => new Promise(r => setTimeout(r, ms)),
+  async handle(path, b) {
+    await this.wait(path === "/search" ? 900 : path === "/explain" ? 500 + Math.random() * 700 : 600);
+    if (this.fail) throw new ApiError("Can't reach the dining service.");
+    if (path === "/cities") return { cities: this.cities };
+    const all = this.v.map((r, i) => ({ business_id: "biz_" + i, name: r[0], address: `${100 + i * 17} ${["Walnut","Chestnut","Pine","Spruce","Market","Arch"][i % 6]} St`, city: "Philadelphia", state: "PA", lat: r[1], lng: r[2], stars: r[3], review_count: r[4], price_band: r[5], categories: r[6], _late: r[7], _flags: r[8] }));
+    if (path === "/search") {
+      if (b.city !== "Philadelphia") return { picks: [], notes: [], social: [] };
+      const want = (b.cuisines || []).map(c => c.toLowerCase());
+      const picks = all.filter(v =>
+        (!want.length || v.categories.some(c => want.includes(c.toLowerCase()))) &&
+        (!v.price_band || v.price_band <= b.price_max) && v.stars >= b.min_stars && v.review_count >= b.min_reviews &&
+        (!b.open_late || v._late) && (b.flags || []).every(f => v._flags.includes(f))
+      ).map(v => ({ ...v, matched_cuisines: v.categories.filter(c => want.includes(c.toLowerCase())), score: +(v.stars / 5 * .6 + Math.log10(v.review_count) / 4 * .4).toFixed(3) }))
+        .sort((a, b) => b.score - a.score).slice(0, b.limit || 5);
+      picks.forEach(p => { delete p._late; delete p._flags; });
+      return { picks, notes: [], social: this.social };
+    }
+    if (path === "/ask") {
+      // demo-mode stand-in for the NL parser: echo the phrase, return top venues
+      const f = { city: "Philadelphia", cuisines: [], price_max: 4, min_stars: 0, min_reviews: 0, open_late: false, day: "Friday", flags: [], limit: 3, party_size: null, notes: [] };
+      const sr = await this.handle("/search", { ...f, limit: 3 });
+      return { filters: f, picks: sr.picks.slice(0, 3), summary: `Here's what I found for "${b.text}":`, notes: [], social: this.social };
+    }
+    if (path === "/explain") {
+      const p = all.find(v => v.business_id === b.business_id) || {}, f = b.filters, out = [];
+      out.push(`${p.stars}★ across ${fmtN(p.review_count)} reviews, one of the most reviewed ${p.matched_cuisines[0] || p.categories[0]} spots that fits.`);
+      if (p.price_band) out.push(`${"$".repeat(p.price_band)} sits inside your ${"$".repeat(f.price_max)} ceiling.`);
+      if (f.open_late) out.push(`Listed hours run late on ${f.day}.`);
+      (f.flags || []).forEach(fl => out.push(`Tagged ${fl.replace(/_/g, " ")} in the dataset.`));
+      return { reasons: out.slice(0, 4) };
+    }
+    if (path === "/invite") {
+      const p = all.find(v => v.business_id === b.business_id);
+      const [h, m] = b.time.split(":").map(Number);
+      const t = `${b.day} ${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
+      const per = [0, 20, 40, 70, 110][p.price_band || 2];
+      return { text: `Dinner ${t} at ${p.name} (${p.address}). ${b.party_size} of us. ${p.stars}★ on ${fmtN(p.review_count)} reviews. You in?`, restaurant: p.name, address: `${p.address}, ${p.city}, ${p.state}`, time: t, party_size: b.party_size, cost_estimate: `~$${per * b.party_size}`, disclaimer: "Estimate from price band only. No reservation has been made." };
+    }
+    throw new ApiError("Unknown endpoint " + path);
+  }
+};
+if (DEMO) {
+  $("#demoBar").innerHTML = `<div class="demo-bar"><b style="align-self:center;padding:0 4px">Demo</b><button id="dmFail">Simulate outage: off</button></div>`;
+  $("#dmFail").onclick = e => { Mock.fail = !Mock.fail; e.target.textContent = `Simulate outage: ${Mock.fail ? "on" : "off"}`; };
+}
+
+boot();
+</script>
+</body>
+</html>

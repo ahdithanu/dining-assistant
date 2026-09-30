@@ -1,0 +1,3 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+qdrant-client>=1.19   # vector search (vector/)
