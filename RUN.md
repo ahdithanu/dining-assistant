@@ -125,3 +125,14 @@ DINING_DATA_PATH=dataset/restaurants.csv uvicorn api:app --port 8000
 - Vibe visibility: `/health` reports qdrant status, collection vector count,
   and hf_token presence -- one curl shows whether the vibe is on. `/ask`
   returns `vibe_error` with the skip reason when the vector backend is down.
+
+## Phase 3b (2026-09-29): query-aware trends
+
+- The trends section was static per city (same 4 IG spots for every Philly
+  query). Now it listens to the query: with cuisines it becomes
+  "Trending sushi in Philadelphia" (IG spots serving the cuisine lead,
+  most-loved review-data spots fill); generic queries keep "Peep these too"
+  (IG) / "Trending in {city}" (review data). Honest fallback: when the
+  cuisine has no venues, the label drops the cuisine ("Trending in Boise").
+  price_max filters the pool when given. `data.trending()` returns
+  (spots, cuisine_hit).

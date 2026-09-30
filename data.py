@@ -350,23 +350,41 @@ def social_signals(city=None, limit=6):
     return spots[:limit]
 
 
-def trending(city, limit=6, exclude_ids=()):
-    """Region-aware 'trending' picks for cities without curated social data.
+def trending(city, limit=6, exclude_ids=(), cuisines=None, price_max=None):
+    """Region- *and* query-aware trending picks for the trends section.
 
-    Honest signal only: the most-loved open venues in the city, ranked by
-    stars x review volume. Returns social-spot-shaped dicts (with a `buzz`
-    line describing the data proof), so the frontend renders them exactly
-    like the Instagram section. Empty list when the city has no coverage.
+    Returns (spots, cuisine_hit): social-spot-shaped dicts (with an honest
+    `buzz` line) plus whether the query's cuisine filter actually matched
+    anything. Ranks the city's most-loved open venues (stars x review
+    volume); when cuisines are given, prefers venues serving them and falls
+    back to city-wide most-loved when nothing matches -- the section stays
+    alive but never mislabeled. price_max filters the pool when given, with
+    the same honest fallback.
     """
     import math
     excluded = set(exclude_ids or ())
     recs = [r for r in load()
             if r.get("is_open") and (r.get("city") or "").lower() == city.strip().lower()
             and r["business_id"] not in excluded]
-    recs.sort(key=lambda r: (r.get("stars") or 0) * math.log10((r.get("review_count") or 0) + 10),
-              reverse=True)
+
+    def tscore(r):
+        return (r.get("stars") or 0) * math.log10((r.get("review_count") or 0) + 10)
+
+    cuisine_hit = False
+    pool = recs
+    if cuisines:
+        matched = [r for r in recs
+                   if any(_match_cuisine(r.get("categories") or [], c) for c in cuisines)]
+        if matched:
+            pool, cuisine_hit = matched, True
+    if price_max is not None:
+        budgeted = [r for r in pool
+                    if r.get("price_band") is not None and r["price_band"] <= price_max]
+        if budgeted:
+            pool = budgeted
+    pool = sorted(pool, key=tscore, reverse=True)[:limit]
     out = []
-    for r in recs[:limit]:
+    for r in pool:
         cats = r.get("categories") or []
         out.append({
             "business_id": r["business_id"],
@@ -384,7 +402,7 @@ def trending(city, limit=6, exclude_ids=()):
                      f"{(r.get('review_count') or 0):,} reviews -- "
                      f"one of {r.get('city')}'s most-loved spots"),
         })
-    return out
+    return out, cuisine_hit
 
 
 def top_cities(n=5):

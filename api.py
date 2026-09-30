@@ -240,29 +240,60 @@ def index():
     return {"ok": True, "docs": "/docs"}
 
 
-def _trends_for(city: str | None, exclude_ids) -> TrendsOut | None:
-    """Region-aware trends section for a city.
+def _trends_for(city: str | None, exclude_ids, cuisines=None,
+                price_max=None) -> TrendsOut | None:
+    """Region-aware *and* query-aware trends section for a city.
 
-    Curated Instagram buzz where we have it (Philadelphia today);
-    otherwise the city's most-loved spots from review data. Returns None
-    when there's no city or no coverage -- never silently tied to one city.
+    - Query names cuisines: "Trending sushi in Philadelphia" -- the section
+      answers the query. Instagram-buzzing spots serving the cuisine lead
+      (rare, premium); most-loved review-data spots fill the rest.
+    - Generic query: curated Instagram buzz where we have it (Philadelphia),
+      otherwise the city's most-loved spots from review data.
+    Returns None when there's no city or no coverage -- never silently
+    tied to one city, never mislabeled.
     """
     if not city:
         return None
+    add_cta = " -- tap + to add one to your list"
+    if cuisines:
+        want = {c.lower() for c in cuisines}
+        ig = [s for s in data.social_signals(city)
+              if (s.get("cuisine") or "").lower() in want]
+        tspots, hit = data.trending(city, limit=6, exclude_ids=exclude_ids,
+                                    cuisines=cuisines, price_max=price_max)
+        seen = {s["business_id"] for s in ig}
+        ordered = ig[:2] + [t for t in tspots if t["business_id"] not in seen]
+        spots = ordered[:4]
+        if not spots:
+            return None
+        if hit:
+            label = f"Trending {' + '.join(cuisines)} in {city}"
+        else:
+            label = f"Trending in {city}"
+        if ig and tspots:
+            source, icon = "Buzzing on Instagram and loved by reviewers", "📸"
+        elif ig:
+            source, icon = "Buzzing on Instagram", "📸"
+        else:
+            source, icon = "Most-loved by reviewers", "⭐"
+        return TrendsOut(label=f"🔥 {label}", source=source + add_cta,
+                         icon=icon,
+                         spots=[SocialSpotOut(**x) for x in spots])
     ig = data.social_signals(city)
     if ig:
         return TrendsOut(
             label="👀 Peep these too",
-            source="Buzzing on Instagram -- tap + to add one to your list",
+            source="Buzzing on Instagram" + add_cta,
             icon="📸",
             spots=[SocialSpotOut(**x) for x in ig],
         )
-    tspots = data.trending(city, limit=6, exclude_ids=exclude_ids)
+    tspots, _ = data.trending(city, limit=6, exclude_ids=exclude_ids,
+                              price_max=price_max)
     if not tspots:
         return None
     return TrendsOut(
         label=f"🔥 Trending in {city}",
-        source="Local favorites from review data -- tap + to add one to your list",
+        source="Local favorites from review data" + add_cta,
         icon="⭐",
         spots=[SocialSpotOut(**x) for x in tspots],
     )
@@ -291,7 +322,9 @@ def search(req: SearchRequest):
     pick_outs = [_pick_out(p) for p in picks]
     return {"picks": pick_outs, "notes": notes,
             "social": [SocialSpotOut(**s) for s in data.social_signals(req.city)],
-            "trends": _trends_for(req.city, {p["business_id"] for p in pick_outs})}
+            "trends": _trends_for(req.city, {p["business_id"] for p in pick_outs},
+                                  cuisines=fixed or None,
+                                  price_max=req.price_max)}
 
 
 class SocialResponse(BaseModel):
@@ -390,7 +423,9 @@ def ask(req: AskRequest):
     # (Philadelphia today), otherwise most-loved spots from review data
     # for the query's city. Never silently tied to one city.
     city = s.filters.get("city")
-    trends = _trends_for(city, {p["record"]["business_id"] for p in picks})
+    trends = _trends_for(city, {p["record"]["business_id"] for p in picks},
+                         cuisines=s.filters.get("cuisines") or None,
+                         price_max=s.filters.get("price_max"))
     return {
         "filters": s.filters,
         "picks": [_pick_out(p) for p in picks],
